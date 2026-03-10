@@ -1,0 +1,12 @@
+app = "nextgen-mod-bot"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  GUILD_ID = "1410778472032370801"
+  LOG_CHANNEL_ID = "1410803080374649005"
+  WELCOME_CHANNEL_ID = "1450106084147859529"
+  CHAT_ENABLED = "true"
+  CHAT_REPLY_DELAY = "30"
