@@ -107,8 +107,7 @@ class ModCog(commands.Cog):
         rows = db.get_warnings(i.guild.id, member.id)
         if not rows: await i.response.send_message(f"No warnings for {member}.", ephemeral=True); return
         lines = [f"**{member}** ({len(rows)} warnings)"] + [f"{n}. [{r['timestamp'][:10]}] {r['reason']} -- {r['moderator']}" for n,r in enumerate(rows,1)]
-        await i.response.send_message("
-".join(lines), ephemeral=True)
+        await i.response.send_message("\n".join(lines), ephemeral=True)
 
     @app_commands.command(name="clearwarnings", description="Clear warnings.")
     @is_mod()
@@ -122,8 +121,7 @@ class ModCog(commands.Cog):
         rows = db.get_recent_log(i.guild.id, min(limit,20))
         if not rows: await i.response.send_message("No actions.", ephemeral=True); return
         lines = [f"[{r['timestamp'][:16]}] **{r['action']}** user `{r['target_id']}` by {r['moderator']}" for r in rows]
-        await i.response.send_message("
-".join(lines), ephemeral=True)
+        await i.response.send_message("\n".join(lines), ephemeral=True)
 
     @app_commands.command(name="slowmode", description="Set channel slowmode.")
     @is_mod()
@@ -184,7 +182,7 @@ class ModCog(commands.Cog):
         try: await tm.add_reaction(emoji.strip())
         except: pass
         await i.followup.send(f"Saved. {emoji} assigns **@{role.name}**.", ephemeral=True)
-    async def _rr_post(self, i, channel, role, emoji="✅", title="Rules Agreement", body="React to agree."):
+    async def _rr_post(self, i, channel, role, emoji="\u2705", title="Rules Agreement", body="React to agree."):
         await i.response.defer(ephemeral=True)
         e = discord.Embed(title=title, description=body, color=discord.Color.blue())
         e.set_footer(text=f"React {emoji} for @{role.name}")
@@ -239,7 +237,7 @@ async def setup(bot):
         await cog._rr_setup(i, message_id, emoji, role, description)
     @rg.command(name="post", description="Post rules-agreement embed.")
     @is_mod()
-    async def rp(i: discord.Interaction, channel: discord.TextChannel, role: discord.Role, emoji: str = "✅", title: str = "Rules Agreement", body: str = "React to agree."):
+    async def rp(i: discord.Interaction, channel: discord.TextChannel, role: discord.Role, emoji: str = "\u2705", title: str = "Rules Agreement", body: str = "React to agree."):
         await cog._rr_post(i, channel, role, emoji, title, body)
     @rg.command(name="list", description="List mappings.")
     @is_mod()
