@@ -12,8 +12,19 @@ REACTION_ROLE_EMOJI    = os.getenv("REACTION_ROLE_EMOJI", "\u2705")
 # Escalation role for tickets beyond bot capability
 ESCALATION_ROLE_ID     = int(os.getenv("ESCALATION_ROLE_ID", "1465341764125589524"))
 
+# Immune roles: members with these roles cannot be warned, muted, timed out, banned, or have messages deleted
+IMMUNE_ROLE_IDS = set()
+_immune_raw = os.getenv("IMMUNE_ROLE_IDS", "1434195823960264805,1410807017685123122,1465341764125589524")
+for _rid in _immune_raw.split(","):
+    _rid = _rid.strip()
+    if _rid.isdigit():
+        IMMUNE_ROLE_IDS.add(int(_rid))
+
 # Ticket channel detection: channels with these keywords in name are treated as tickets
 TICKET_KEYWORDS        = os.getenv("TICKET_KEYWORDS", "ticket,support,help-desk").split(",")
+
+# Timeout duration in minutes (used instead of muted role)
+TIMEOUT_DURATION_MIN   = int(os.getenv("TIMEOUT_DURATION_MIN", "30"))
 
 CHANNEL_MAP = {
     "rules":        int(os.getenv("CH_RULES",        "0")),
