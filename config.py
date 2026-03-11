@@ -9,6 +9,12 @@ MUTED_ROLE_ID          = int(os.getenv("MUTED_ROLE_ID", "0"))
 MEMBER_ROLE_ID         = int(os.getenv("MEMBER_ROLE_ID", "0"))
 REACTION_ROLE_EMOJI    = os.getenv("REACTION_ROLE_EMOJI", "\u2705")
 
+# Escalation role for tickets beyond bot capability
+ESCALATION_ROLE_ID     = int(os.getenv("ESCALATION_ROLE_ID", "1465341764125589524"))
+
+# Ticket channel detection: channels with these keywords in name are treated as tickets
+TICKET_KEYWORDS        = os.getenv("TICKET_KEYWORDS", "ticket,support,help-desk").split(",")
+
 CHANNEL_MAP = {
     "rules":        int(os.getenv("CH_RULES",        "0")),
     "introductions":int(os.getenv("CH_INTRODUCTIONS","0")),
