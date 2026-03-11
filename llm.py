@@ -1,13 +1,18 @@
-"""LLM wrapper using Groq (OpenAI-compatible API)."""
+"""LLM wrapper using Groq (OpenAI-compatible API) with retry and rate-limit handling."""
 from __future__ import annotations
-import json, os, asyncio, logging
+import json, os, asyncio, logging, time
 from openai import AsyncOpenAI
 
 log = logging.getLogger("llm")
 
 _GROQ_KEY = os.getenv("GROQ_API_KEY", "")
 _MODEL_NAME = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
+_FALLBACK_MODEL = "llama-3.1-8b-instant"
 _client = None
+
+# Simple rate limit tracking
+_last_rate_limit = 0
+_RATE_LIMIT_COOLDOWN = 30  # seconds to wait after a rate limit hit
 
 SYSTEM_PROMPT = """You are a Discord server moderator. Help members, answer questions, keep the community safe.
 Tone rules:
@@ -44,33 +49,62 @@ def _get_client():
     return _client
 
 
-async def generate(user_message, context="", max_tokens=300):
+async def _call(messages, max_tokens=300, temperature=0.7, model=None):
+    """Core LLM call with retry, fallback model, and rate-limit cooldown."""
+    global _last_rate_limit
     client = _get_client()
     if client is None:
-        return "(LLM not configured. Set GROQ_API_KEY.)"
+        return None
+
+    # If we recently hit a rate limit, wait before trying
+    elapsed = time.time() - _last_rate_limit
+    if elapsed < _RATE_LIMIT_COOLDOWN:
+        await asyncio.sleep(_RATE_LIMIT_COOLDOWN - elapsed)
+
+    use_model = model or _MODEL_NAME
+    for attempt in range(3):
+        try:
+            resp = await client.chat.completions.create(
+                model=use_model,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            return resp.choices[0].message.content.strip()
+        except Exception as e:
+            err = str(e).lower()
+            if "rate_limit" in err or "429" in err:
+                _last_rate_limit = time.time()
+                # Try fallback model on first rate limit
+                if use_model != _FALLBACK_MODEL:
+                    log.warning(f"Rate limited on {use_model}, trying {_FALLBACK_MODEL}")
+                    use_model = _FALLBACK_MODEL
+                    continue
+                # Wait and retry
+                wait = min(5 * (attempt + 1), 15)
+                log.warning(f"Rate limited, waiting {wait}s (attempt {attempt + 1}/3)")
+                await asyncio.sleep(wait)
+            else:
+                log.error(f"Groq error: {e}")
+                return None
+    log.error("Groq: all retries exhausted")
+    return None
+
+
+async def generate(user_message, context="", max_tokens=300):
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     content = ""
     if context:
         content += f"Context:\n{context}\n\n"
     content += user_message
     messages.append({"role": "user", "content": content})
-    try:
-        resp = await client.chat.completions.create(
-            model=_MODEL_NAME,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=0.7,
-        )
-        return resp.choices[0].message.content.strip()
-    except Exception as e:
-        log.error(f"Groq error: {e}")
-        return "(LLM error)"
+    result = await _call(messages, max_tokens=max_tokens, temperature=0.7)
+    if result is None:
+        return "(Briefly unavailable, try again in a moment.)"
+    return result
 
 
 async def chat_reply(message_text, channel_context="", recent_messages=None, max_tokens=200):
-    client = _get_client()
-    if client is None:
-        return ""
     messages = [{"role": "system", "content": CHAT_SYSTEM_PROMPT}]
     content = ""
     if channel_context:
@@ -83,23 +117,11 @@ async def chat_reply(message_text, channel_context="", recent_messages=None, max
     else:
         content += f"Someone said: {message_text}\n\nReply naturally. Short and human.\n"
     messages.append({"role": "user", "content": content})
-    try:
-        resp = await client.chat.completions.create(
-            model=_MODEL_NAME,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=0.85,
-        )
-        return resp.choices[0].message.content.strip()
-    except Exception as e:
-        log.error(f"Groq chat error: {e}")
-        return ""
+    result = await _call(messages, max_tokens=max_tokens, temperature=0.85)
+    return result or ""
 
 
 async def classify_violation(text):
-    client = _get_client()
-    if client is None:
-        return {"violation": False, "category": "none", "severity": 0}
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": (
@@ -113,17 +135,14 @@ async def classify_violation(text):
             f"Message: {text}"
         )},
     ]
+    result = await _call(messages, max_tokens=60, temperature=0)
+    if result is None:
+        return {"violation": False, "category": "none", "severity": 0}
     try:
-        resp = await client.chat.completions.create(
-            model=_MODEL_NAME,
-            messages=messages,
-            max_tokens=60,
-            temperature=0,
-        )
-        raw = resp.choices[0].message.content.strip()
+        raw = result
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
         return json.loads(raw)
     except Exception as e:
-        log.error(f"Groq classify error: {e}")
+        log.error(f"Groq classify parse error: {e}")
         return {"violation": False, "category": "none", "severity": 0}
