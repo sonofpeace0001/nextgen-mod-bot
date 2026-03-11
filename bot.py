@@ -1,9 +1,9 @@
-"""NEXTGEN MOD -- Discord Moderation Agent with conversational chat."""
+"""NEXTGEN MOD -- Discord Moderation Agent with conversational chat and ticket support."""
 from __future__ import annotations
 import asyncio, logging, traceback, sys
 import discord
 from discord.ext import commands
-import config, database as db, moderation, welcome, appeals, reports, roles, chat
+import config, database as db, moderation, welcome, appeals, reports, roles, chat, tickets
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", stream=sys.stdout)
 log = logging.getLogger("mod-agent")
@@ -35,6 +35,13 @@ class ModerationBot(commands.Bot):
             await appeals.handle_dm(self, message); return
         await chat.cancel_for_channel(message.channel.id)
         await self.process_commands(message)
+
+        # Check if this is a ticket channel first
+        if tickets.is_ticket_channel(message.channel):
+            await tickets.handle_ticket_message(self, message)
+            await moderation.handle_message(self, message)
+            return
+
         if self.user.mentioned_in(message) and not message.mention_everyone:
             log.info(f"BOT MENTIONED by {message.author}")
             handled = await welcome.answer_question(self, message)
