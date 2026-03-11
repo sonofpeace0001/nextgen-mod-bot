@@ -1,4 +1,4 @@
-"""All slash commands."""
+"""All slash commands. Only immune roles can use mod commands."""
 from __future__ import annotations
 import asyncio, datetime, re
 import discord
@@ -15,18 +15,56 @@ def parse_duration(raw):
     td = datetime.timedelta(days=d,hours=h,minutes=mn,seconds=s)
     return td if td.total_seconds() > 0 else None
 
-def is_mod():
-    async def pred(i):
-        if i.user.guild_permissions.manage_messages: return True
-        await i.response.send_message("Need Manage Messages.", ephemeral=True); return False
+
+def _has_immune_role(member) -> bool:
+    """Check if member has any immune role (Elite, Admin, Escalation)."""
+    for role in member.roles:
+        if role.id in config.IMMUNE_ROLE_IDS:
+            return True
+    return False
+
+
+def is_immune_only():
+    """Permission check: only immune role holders can use this command.
+    Non-immune users get timed out for 1 hour and publicly called out."""
+    async def pred(interaction: discord.Interaction):
+        if _has_immune_role(interaction.user):
+            return True
+        # Unauthorized user tried to use a mod command. Time them out for 1 hour.
+        duration = datetime.timedelta(hours=1)
+        try:
+            await interaction.user.timeout(duration, reason="Unauthorized use of mod commands")
+        except Exception:
+            pass
+        # Tell them privately
+        await interaction.response.send_message(
+            "You do not have permission to use this command. You have been timed out for 1 hour.",
+            ephemeral=True
+        )
+        # Announce publicly with @everyone
+        try:
+            await interaction.channel.send(
+                f"@everyone {interaction.user.mention} just tried to use a moderator command "
+                f"without authorization. They have been timed out for 1 hour."
+            )
+        except Exception:
+            pass
+        db.log_action(
+            interaction.guild.id, "TIMEOUT (unauthorized cmd)", interaction.user.id,
+            "AutoMod", f"Tried to use /{interaction.command.name}"
+        )
+        return False
     return app_commands.check(pred)
+
 
 class ModCog(commands.Cog):
     def __init__(self, bot): self.bot = bot
 
+    # ── MOD-ONLY COMMANDS ──────────────────────────────────────────
+
     @app_commands.command(name="warn", description="Warn a member.")
     @app_commands.describe(member="Member", reason="Reason")
-    @is_mod()
+    @is_immune_only()
     async def warn(self, i, member: discord.Member, reason: str):
         await i.response.defer(ephemeral=True)
         if moderation._is_immune(member):
@@ -42,28 +80,26 @@ class ModCog(commands.Cog):
         if total >= config.WARN_BEFORE_BAN: await moderation._ban(self.bot, i.guild, member, "Exceeded warnings")
         elif total >= config.WARN_BEFORE_MUTE: await moderation._mute(self.bot, i.guild, member, reason)
 
-    @app_commands.command(name="mute", description="Mute a member.")
+    @app_commands.command(name="mute", description="Timeout a member.")
     @app_commands.describe(member="Member", reason="Reason")
-    @is_mod()
+    @is_immune_only()
     async def mute(self, i, member: discord.Member, reason: str = "No reason"):
         await i.response.defer(ephemeral=True)
         if moderation._is_immune(member):
             await i.followup.send(f"{member} has an immune role and cannot be muted.", ephemeral=True); return
         await moderation._mute(self.bot, i.guild, member, reason)
-        await i.followup.send(f"Muted {member}.", ephemeral=True)
+        await i.followup.send(f"Timed out {member}.", ephemeral=True)
 
-    @app_commands.command(name="unmute", description="Unmute/untimeout a member.")
-    @is_mod()
+    @app_commands.command(name="unmute", description="Remove timeout from a member.")
+    @is_immune_only()
     async def unmute(self, i, member: discord.Member):
         await i.response.defer(ephemeral=True)
         removed = False
-        # Remove timeout if active
         if member.is_timed_out():
             try:
                 await member.timeout(None, reason=f"Untimeout by {i.user}")
                 removed = True
             except: pass
-        # Also remove muted role if present
         r = i.guild.get_role(config.MUTED_ROLE_ID) or discord.utils.get(i.guild.roles, name="Muted")
         if r and r in member.roles:
             await member.remove_roles(r); removed = True
@@ -74,7 +110,7 @@ class ModCog(commands.Cog):
             await i.followup.send(f"{member} is not muted or timed out.", ephemeral=True)
 
     @app_commands.command(name="ban", description="Ban a member.")
-    @is_mod()
+    @is_immune_only()
     async def ban(self, i, member: discord.Member, reason: str = "No reason"):
         await i.response.defer(ephemeral=True)
         if moderation._is_immune(member):
@@ -83,7 +119,7 @@ class ModCog(commands.Cog):
         await i.followup.send(f"Banned {member}.", ephemeral=True)
 
     @app_commands.command(name="tempban", description="Temporarily ban a member.")
-    @is_mod()
+    @is_immune_only()
     async def tempban(self, i, member: discord.Member, duration: str, reason: str = "No reason"):
         await i.response.defer(ephemeral=True)
         if moderation._is_immune(member):
@@ -111,7 +147,7 @@ class ModCog(commands.Cog):
         db.remove_tempban(gid, uid)
 
     @app_commands.command(name="purge", description="Bulk-delete messages.")
-    @is_mod()
+    @is_immune_only()
     async def purge(self, i, amount: app_commands.Range[int,1,100], member: discord.Member = None):
         await i.response.defer(ephemeral=True)
         cutoff = discord.utils.utcnow() - datetime.timedelta(days=14)
@@ -121,7 +157,7 @@ class ModCog(commands.Cog):
         await i.followup.send(f"Deleted {len(d)} message(s).", ephemeral=True)
 
     @app_commands.command(name="warnings", description="View warnings.")
-    @is_mod()
+    @is_immune_only()
     async def warnings(self, i, member: discord.Member):
         rows = db.get_warnings(i.guild.id, member.id)
         if not rows: await i.response.send_message(f"No warnings for {member}.", ephemeral=True); return
@@ -129,13 +165,13 @@ class ModCog(commands.Cog):
         await i.response.send_message("\n".join(lines), ephemeral=True)
 
     @app_commands.command(name="clearwarnings", description="Clear warnings.")
-    @is_mod()
+    @is_immune_only()
     async def clearwarnings(self, i, member: discord.Member):
         db.clear_warnings(i.guild.id, member.id)
         await i.response.send_message(f"Cleared for {member}.", ephemeral=True)
 
     @app_commands.command(name="modlog", description="Recent mod actions.")
-    @is_mod()
+    @is_immune_only()
     async def modlog(self, i, limit: int = 10):
         rows = db.get_recent_log(i.guild.id, min(limit,20))
         if not rows: await i.response.send_message("No actions.", ephemeral=True); return
@@ -143,7 +179,7 @@ class ModCog(commands.Cog):
         await i.response.send_message("\n".join(lines), ephemeral=True)
 
     @app_commands.command(name="slowmode", description="Set channel slowmode.")
-    @is_mod()
+    @is_immune_only()
     async def slowmode(self, i, seconds: app_commands.Range[int,0,21600], channel: discord.TextChannel = None):
         await i.response.defer(ephemeral=True)
         ch = channel or i.channel
@@ -152,7 +188,7 @@ class ModCog(commands.Cog):
         await i.followup.send(f"Slowmode {'off' if seconds==0 else f'{seconds}s'} in {ch.mention}.", ephemeral=True)
 
     @app_commands.command(name="lookup", description="Full mod profile.")
-    @is_mod()
+    @is_immune_only()
     async def lookup(self, i, member: discord.Member):
         await i.response.defer(ephemeral=True)
         w = db.get_warnings(i.guild.id, member.id)
@@ -167,15 +203,45 @@ class ModCog(commands.Cog):
         e.add_field(name="Notes", value=str(len(n)))
         await i.followup.send(embed=e, ephemeral=True)
 
-    @app_commands.command(name="report", description="Report a member.")
-    async def report(self, i, member: discord.Member, reason: str):
-        await reports_module.submit_from_command(self.bot, i, member, reason)
-
     @app_commands.command(name="guide", description="Channel overview.")
+    @is_immune_only()
     async def guide(self, i):
         import welcome as wm
         t = await llm.generate("Give a concise, friendly overview of the server channels.", context=wm.CHANNEL_GUIDE, max_tokens=250)
         await i.response.send_message(t, ephemeral=True)
+
+    # ── PUBLIC COMMAND: /report ────────────────────────────────────
+
+    @app_commands.command(name="report", description="Report an issue to moderators.")
+    @app_commands.describe(reason="What's happening? Describe the issue.")
+    async def report(self, i, reason: str):
+        await i.response.defer(ephemeral=True)
+        # Build the ping string for all immune roles
+        role_pings = " ".join(f"<@&{rid}>" for rid in config.IMMUNE_ROLE_IDS)
+        e = discord.Embed(
+            title="Member Report",
+            description=reason,
+            color=discord.Color.red(),
+            timestamp=discord.utils.utcnow()
+        )
+        e.add_field(name="Reported by", value=f"{i.user.mention} ({i.user})", inline=True)
+        e.add_field(name="Channel", value=i.channel.mention, inline=True)
+        # Send to log channel
+        log_ch = i.guild.get_channel(config.LOG_CHANNEL_ID)
+        if log_ch:
+            try: await log_ch.send(f"{role_pings} New report from {i.user.mention}", embed=e)
+            except: pass
+        # Also alert in the current channel
+        try:
+            await i.channel.send(
+                f"{role_pings} A member has flagged an issue in this channel. Please check.",
+                embed=e
+            )
+        except: pass
+        await i.followup.send("Your report has been sent to the moderators. Thank you.", ephemeral=True)
+        db.log_action(i.guild.id, "REPORT", i.user.id, str(i.user), reason)
+
+    # ── INTERNAL: note and reactionrole helpers ────────────────────
 
     async def _note_add(self, i, member, content):
         nid = db.add_note(i.guild.id, member.id, str(i.user), content[:1000])
@@ -229,52 +295,63 @@ class ModCog(commands.Cog):
             c = db.remove_reaction_roles_for_message(i.guild.id, mid)
             await i.response.send_message(f"Removed {c}." if c else "None.", ephemeral=True)
 
+
 async def setup(bot):
     cog = ModCog(bot); await bot.add_cog(cog)
+
+    # Note subcommands (immune only)
     ng = app_commands.Group(name="note", description="Moderator notes.")
     @ng.command(name="add", description="Add note.")
     @app_commands.describe(member="User", content="Text")
-    @is_mod()
+    @is_immune_only()
     async def na(i: discord.Interaction, member: discord.Member, content: str):
         await cog._note_add(i, member, content)
     @ng.command(name="list", description="List notes.")
     @app_commands.describe(member="User")
-    @is_mod()
+    @is_immune_only()
     async def nl(i: discord.Interaction, member: discord.Member):
         await cog._note_list(i, member)
     @ng.command(name="delete", description="Delete note.")
     @app_commands.describe(note_id="ID")
-    @is_mod()
+    @is_immune_only()
     async def nd(i: discord.Interaction, note_id: int):
         await cog._note_delete(i, note_id)
     bot.tree.add_command(ng)
+
+    # Reaction role subcommands (immune only)
     rg = app_commands.Group(name="reactionrole", description="Reaction roles.")
     @rg.command(name="setup", description="Bind emoji to role on a message.")
     @app_commands.describe(message_id="Message ID", emoji="Emoji", role="Role", description="Note")
-    @is_mod()
+    @is_immune_only()
     async def rs(i: discord.Interaction, message_id: str, emoji: str, role: discord.Role, description: str = ""):
         await cog._rr_setup(i, message_id, emoji, role, description)
     @rg.command(name="post", description="Post rules-agreement embed.")
-    @is_mod()
+    @is_immune_only()
     async def rp(i: discord.Interaction, channel: discord.TextChannel, role: discord.Role, emoji: str = "\u2705", title: str = "Rules Agreement", body: str = "React to agree."):
         await cog._rr_post(i, channel, role, emoji, title, body)
     @rg.command(name="list", description="List mappings.")
-    @is_mod()
+    @is_immune_only()
     async def rl(i: discord.Interaction):
         await cog._rr_list(i)
     @rg.command(name="remove", description="Remove mapping.")
-    @is_mod()
+    @is_immune_only()
     async def rr(i: discord.Interaction, message_id: str, emoji: str = None):
         await cog._rr_remove(i, message_id, emoji)
     bot.tree.add_command(rg)
+
+    # Context menu: Report Message (available to everyone)
     @bot.tree.context_menu(name="Report Message")
     async def rmc(i: discord.Interaction, message: discord.Message):
         if message.author.id == i.user.id:
             await i.response.send_message("Can't report yourself.", ephemeral=True); return
         await reports_module.submit_from_context_menu(bot, i, message)
+
+    # Sync commands
     go = discord.Object(id=config.GUILD_ID) if config.GUILD_ID else None
     if go: bot.tree.copy_global_to(guild=go); await bot.tree.sync(guild=go)
     else: await bot.tree.sync()
+
+    # Restore pending tempbans
     now = datetime.datetime.utcnow()
     for row in db.get_pending_tempbans():
         rem = (datetime.datetime.fromisoformat(row["unban_at"]) - now).total_seconds()
