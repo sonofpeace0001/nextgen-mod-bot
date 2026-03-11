@@ -29,6 +29,8 @@ class ModCog(commands.Cog):
     @is_mod()
     async def warn(self, i, member: discord.Member, reason: str):
         await i.response.defer(ephemeral=True)
+        if moderation._is_immune(member):
+            await i.followup.send(f"{member} has an immune role and cannot be warned.", ephemeral=True); return
         total = db.add_warning(i.guild.id, member.id, str(i.user), reason)
         db.log_action(i.guild.id, "WARN", member.id, str(i.user), reason)
         t = await llm.generate(f"Warn member. Reason: {reason}. Warning {total}/{config.WARN_BEFORE_MUTE}. Calm.")
@@ -45,23 +47,38 @@ class ModCog(commands.Cog):
     @is_mod()
     async def mute(self, i, member: discord.Member, reason: str = "No reason"):
         await i.response.defer(ephemeral=True)
+        if moderation._is_immune(member):
+            await i.followup.send(f"{member} has an immune role and cannot be muted.", ephemeral=True); return
         await moderation._mute(self.bot, i.guild, member, reason)
         await i.followup.send(f"Muted {member}.", ephemeral=True)
 
-    @app_commands.command(name="unmute", description="Unmute a member.")
+    @app_commands.command(name="unmute", description="Unmute/untimeout a member.")
     @is_mod()
     async def unmute(self, i, member: discord.Member):
         await i.response.defer(ephemeral=True)
+        removed = False
+        # Remove timeout if active
+        if member.is_timed_out():
+            try:
+                await member.timeout(None, reason=f"Untimeout by {i.user}")
+                removed = True
+            except: pass
+        # Also remove muted role if present
         r = i.guild.get_role(config.MUTED_ROLE_ID) or discord.utils.get(i.guild.roles, name="Muted")
         if r and r in member.roles:
-            await member.remove_roles(r); db.log_action(i.guild.id, "UNMUTE", member.id, str(i.user), "")
+            await member.remove_roles(r); removed = True
+        if removed:
+            db.log_action(i.guild.id, "UNMUTE", member.id, str(i.user), "")
             await i.followup.send(f"Unmuted {member}.", ephemeral=True)
-        else: await i.followup.send(f"{member} not muted.", ephemeral=True)
+        else:
+            await i.followup.send(f"{member} is not muted or timed out.", ephemeral=True)
 
     @app_commands.command(name="ban", description="Ban a member.")
     @is_mod()
     async def ban(self, i, member: discord.Member, reason: str = "No reason"):
         await i.response.defer(ephemeral=True)
+        if moderation._is_immune(member):
+            await i.followup.send(f"{member} has an immune role and cannot be banned.", ephemeral=True); return
         await moderation._ban(self.bot, i.guild, member, reason)
         await i.followup.send(f"Banned {member}.", ephemeral=True)
 
@@ -69,6 +86,8 @@ class ModCog(commands.Cog):
     @is_mod()
     async def tempban(self, i, member: discord.Member, duration: str, reason: str = "No reason"):
         await i.response.defer(ephemeral=True)
+        if moderation._is_immune(member):
+            await i.followup.send(f"{member} has an immune role and cannot be temp-banned.", ephemeral=True); return
         td = parse_duration(duration)
         if not td: await i.followup.send("Bad duration.", ephemeral=True); return
         ua = discord.utils.utcnow() + td
