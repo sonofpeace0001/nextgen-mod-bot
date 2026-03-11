@@ -6,9 +6,9 @@ import discord, config, llm
 
 log = logging.getLogger("tickets")
 
-# Cooldown per channel to avoid spamming tickets
 _ticket_cooldowns = defaultdict(float)
 _TICKET_COOLDOWN = 10  # seconds between bot replies in a ticket
+_escalated_channels = set()  # track channels already escalated to avoid spam
 
 
 def is_ticket_channel(channel) -> bool:
@@ -27,7 +27,6 @@ async def handle_ticket_message(bot, message):
     if not is_ticket_channel(message.channel):
         return False
 
-    # Don't reply to bots
     if message.author.bot:
         return False
 
@@ -46,16 +45,25 @@ async def handle_ticket_message(bot, message):
     history = await _get_ticket_history(message.channel, before=message, limit=15)
     history.append({"author": message.author.display_name, "content": message.content})
 
-    # Generate reply
+    # Generate reply with retries
     async with message.channel.typing():
         reply, needs_escalation = await llm.ticket_reply(
             message.content, ticket_history=history
         )
 
-    if not reply:
-        return False
+    # If LLM failed completely, do NOT escalate. Just acknowledge and wait.
+    if not reply or reply == "(Briefly unavailable, try again in a moment.)":
+        try:
+            await message.reply(
+                "Got your message. Let me look into this and get back to you shortly.",
+                mention_author=False
+            )
+            _ticket_cooldowns[message.channel.id] = time.time()
+        except Exception as e:
+            log.error(f"Failed to send ticket acknowledgment: {e}")
+        return True
 
-    # Send reply
+    # Send the helpful reply first, always
     try:
         await message.reply(reply, mention_author=False)
         _ticket_cooldowns[message.channel.id] = time.time()
@@ -63,13 +71,14 @@ async def handle_ticket_message(bot, message):
         log.error(f"Failed to send ticket reply: {e}")
         return False
 
-    # Escalate if needed
-    if needs_escalation and config.ESCALATION_ROLE_ID:
+    # Only escalate if LLM explicitly said to, and we haven't already escalated this channel
+    if needs_escalation and config.ESCALATION_ROLE_ID and message.channel.id not in _escalated_channels:
         try:
             await message.channel.send(
-                f"<@&{config.ESCALATION_ROLE_ID}> This ticket may need human attention. "
-                f"A member needs help with something beyond my scope."
+                f"I've done what I can on this one. Tagging <@&{config.ESCALATION_ROLE_ID}> "
+                f"to take a closer look and help you further."
             )
+            _escalated_channels.add(message.channel.id)
             log.info(f"Escalated ticket in #{message.channel.name} to role {config.ESCALATION_ROLE_ID}")
         except Exception as e:
             log.error(f"Failed to escalate ticket: {e}")
