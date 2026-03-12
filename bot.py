@@ -33,6 +33,11 @@ class ModerationBot(commands.Bot):
         if message.author.bot: return
         if message.guild is None:
             await appeals.handle_dm(self, message); return
+
+        # Completely ignore messages in ignored channels (no replies, no moderation, nothing)
+        if moderation._is_ignored_channel(message.channel.id):
+            return
+
         await chat.cancel_for_channel(message.channel.id)
         await self.process_commands(message)
 
@@ -54,6 +59,7 @@ class ModerationBot(commands.Bot):
         await chat.schedule_delayed_reply(self, message)
     async def on_message_edit(self, before, after):
         if after.author.bot or after.guild is None: return
+        if moderation._is_ignored_channel(after.channel.id): return
         await moderation.handle_message(self, after)
     async def on_member_join(self, member):
         log.info(f"MEMBER JOIN: {member} ({member.id})")
