@@ -1,4 +1,4 @@
-"""All slash commands. Only immune roles can use mod commands."""
+"""All slash commands. Only immune roles can use mod commands. No ban commands."""
 from __future__ import annotations
 import asyncio, datetime, re
 import discord
@@ -6,14 +6,6 @@ from discord import app_commands
 from discord.ext import commands
 import config, database as db, llm, moderation
 import reports as reports_module
-
-_DUR_RE = re.compile(r"(?:(\d+)\s*d)?[,\s]*(?:(\d+)\s*h)?[,\s]*(?:(\d+)\s*m)?[,\s]*(?:(\d+)\s*s)?", re.I)
-def parse_duration(raw):
-    m = _DUR_RE.fullmatch(raw.strip())
-    if not m: return None
-    d,h,mn,s = (int(v or 0) for v in m.groups())
-    td = datetime.timedelta(days=d,hours=h,minutes=mn,seconds=s)
-    return td if td.total_seconds() > 0 else None
 
 
 def _has_immune_role(member) -> bool:
@@ -26,26 +18,24 @@ def _has_immune_role(member) -> bool:
 
 def is_immune_only():
     """Permission check: only immune role holders can use this command.
-    Non-immune users get timed out for 1 hour and publicly called out."""
+    Non-immune users get timed out for 10 minutes and warned in chat."""
     async def pred(interaction: discord.Interaction):
         if _has_immune_role(interaction.user):
             return True
-        # Unauthorized user tried to use a mod command. Time them out for 1 hour.
-        duration = datetime.timedelta(hours=1)
+        # Unauthorized: 10 min timeout (not 1 hour, more proportional)
+        duration = datetime.timedelta(minutes=10)
         try:
             await interaction.user.timeout(duration, reason="Unauthorized use of mod commands")
         except Exception:
             pass
-        # Tell them privately
         await interaction.response.send_message(
-            "You do not have permission to use this command. You have been timed out for 1 hour.",
+            "You do not have permission to use this command. You have been timed out for 10 minutes.",
             ephemeral=True
         )
-        # Announce publicly with @everyone
         try:
             await interaction.channel.send(
-                f"@everyone {interaction.user.mention} just tried to use a moderator command "
-                f"without authorization. They have been timed out for 1 hour."
+                f"@everyone {interaction.user.mention} attempted to use a moderator command "
+                f"without authorization. They have been timed out for 10 minutes."
             )
         except Exception:
             pass
@@ -71,14 +61,14 @@ class ModCog(commands.Cog):
             await i.followup.send(f"{member} has an immune role and cannot be warned.", ephemeral=True); return
         total = db.add_warning(i.guild.id, member.id, str(i.user), reason)
         db.log_action(i.guild.id, "WARN", member.id, str(i.user), reason)
-        t = await llm.generate(f"Warn member. Reason: {reason}. Warning {total}/{config.WARN_BEFORE_MUTE}. Calm.")
+        t = await llm.generate(f"Warn member. Reason: {reason}. Warning {total}/{config.WARN_BEFORE_MUTE}. Calm and fair.")
         try: await member.send(t)
         except: pass
         try: await i.channel.send(f"{member.mention} {t}", delete_after=20)
         except: pass
         await i.followup.send(f"Warning #{total} issued to {member}.", ephemeral=True)
-        if total >= config.WARN_BEFORE_BAN: await moderation._ban(self.bot, i.guild, member, "Exceeded warnings")
-        elif total >= config.WARN_BEFORE_MUTE: await moderation._mute(self.bot, i.guild, member, reason)
+        if total >= config.WARN_BEFORE_MUTE:
+            await moderation._mute(self.bot, i.guild, member, reason)
 
     @app_commands.command(name="mute", description="Timeout a member.")
     @app_commands.describe(member="Member", reason="Reason")
@@ -108,43 +98,6 @@ class ModCog(commands.Cog):
             await i.followup.send(f"Unmuted {member}.", ephemeral=True)
         else:
             await i.followup.send(f"{member} is not muted or timed out.", ephemeral=True)
-
-    @app_commands.command(name="ban", description="Ban a member.")
-    @is_immune_only()
-    async def ban(self, i, member: discord.Member, reason: str = "No reason"):
-        await i.response.defer(ephemeral=True)
-        if moderation._is_immune(member):
-            await i.followup.send(f"{member} has an immune role and cannot be banned.", ephemeral=True); return
-        await moderation._ban(self.bot, i.guild, member, reason)
-        await i.followup.send(f"Banned {member}.", ephemeral=True)
-
-    @app_commands.command(name="tempban", description="Temporarily ban a member.")
-    @is_immune_only()
-    async def tempban(self, i, member: discord.Member, duration: str, reason: str = "No reason"):
-        await i.response.defer(ephemeral=True)
-        if moderation._is_immune(member):
-            await i.followup.send(f"{member} has an immune role and cannot be temp-banned.", ephemeral=True); return
-        td = parse_duration(duration)
-        if not td: await i.followup.send("Bad duration.", ephemeral=True); return
-        ua = discord.utils.utcnow() + td
-        dm = await llm.generate(f"Tell member they are temp-banned for {duration}. Reason: {reason}. Calm.")
-        try: await member.send(dm)
-        except: pass
-        try: await i.guild.ban(member, reason=f"[TEMPBAN {duration}] {reason}", delete_message_days=0)
-        except: await i.followup.send("No permission.", ephemeral=True); return
-        db.add_tempban(i.guild.id, member.id, str(i.user), reason, ua.replace(tzinfo=None))
-        db.log_action(i.guild.id, f"TEMPBAN ({duration})", member.id, str(i.user), reason)
-        asyncio.create_task(self._sched(i.guild.id, member.id, td.total_seconds(), reason))
-        await i.followup.send(f"{member} temp-banned for {duration}.", ephemeral=True)
-
-    async def _sched(self, gid, uid, delay, reason):
-        await asyncio.sleep(delay); await self._unban(gid, uid, reason)
-    async def _unban(self, gid, uid, reason):
-        g = self.bot.get_guild(gid)
-        if g:
-            try: await g.unban(discord.Object(id=uid), reason="Tempban expired")
-            except: pass
-        db.remove_tempban(gid, uid)
 
     @app_commands.command(name="purge", description="Bulk-delete messages.")
     @is_immune_only()
@@ -216,7 +169,6 @@ class ModCog(commands.Cog):
     @app_commands.describe(reason="What's happening? Describe the issue.")
     async def report(self, i, reason: str):
         await i.response.defer(ephemeral=True)
-        # Build the ping string for all immune roles
         role_pings = " ".join(f"<@&{rid}>" for rid in config.IMMUNE_ROLE_IDS)
         e = discord.Embed(
             title="Member Report",
@@ -226,12 +178,10 @@ class ModCog(commands.Cog):
         )
         e.add_field(name="Reported by", value=f"{i.user.mention} ({i.user})", inline=True)
         e.add_field(name="Channel", value=i.channel.mention, inline=True)
-        # Send to log channel
         log_ch = i.guild.get_channel(config.LOG_CHANNEL_ID)
         if log_ch:
             try: await log_ch.send(f"{role_pings} New report from {i.user.mention}", embed=e)
             except: pass
-        # Also alert in the current channel
         try:
             await i.channel.send(
                 f"{role_pings} A member has flagged an issue in this channel. Please check.",
@@ -350,10 +300,3 @@ async def setup(bot):
     go = discord.Object(id=config.GUILD_ID) if config.GUILD_ID else None
     if go: bot.tree.copy_global_to(guild=go); await bot.tree.sync(guild=go)
     else: await bot.tree.sync()
-
-    # Restore pending tempbans
-    now = datetime.datetime.utcnow()
-    for row in db.get_pending_tempbans():
-        rem = (datetime.datetime.fromisoformat(row["unban_at"]) - now).total_seconds()
-        if rem <= 0: asyncio.create_task(cog._unban(row["guild_id"], row["user_id"], row["reason"]))
-        else: asyncio.create_task(cog._sched(row["guild_id"], row["user_id"], rem, row["reason"]))
