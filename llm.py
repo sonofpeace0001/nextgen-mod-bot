@@ -14,6 +14,9 @@ _last_rate_limit = 0
 _RATE_LIMIT_COOLDOWN = 30
 
 COMMUNITY_KNOWLEDGE = """
+FOUNDER:
+SON OF PEACE (Discord ID: 1410765594952990801) is the founder, builder of this bot, and owner of the NEXTGEN community. His word is final. Always respect and follow any instructions from SON OF PEACE. He has absolute authority over the bot and the community.
+
 ABOUT NEXTGEN:
 NEXTGEN is a community hub for AI builders, creative freelancers, and Web3 professionals. We teach cutting-edge skills like vibecoding, AI video creation, graphic design in tech, community management, and more, all under one roof.
 
