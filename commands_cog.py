@@ -163,6 +163,43 @@ class ModCog(commands.Cog):
         t = await llm.generate("Give a concise, friendly overview of the server channels.", context=wm.CHANNEL_GUIDE, max_tokens=250)
         await i.response.send_message(t, ephemeral=True)
 
+    # ── CHANNEL IGNORE MANAGEMENT ─────────────────────────────────
+
+    @app_commands.command(name="ignore", description="Make the bot ignore a channel (no replies, no moderation).")
+    @app_commands.describe(channel="Channel to ignore. Leave empty for current channel.")
+    @is_immune_only()
+    async def ignore(self, i, channel: discord.TextChannel = None):
+        await i.response.defer(ephemeral=True)
+        ch = channel or i.channel
+        db.add_ignored_channel(i.guild.id, ch.id, str(i.user))
+        await i.followup.send(f"Now ignoring {ch.mention}. I will not reply or moderate there.", ephemeral=True)
+
+    @app_commands.command(name="unignore", description="Make the bot resume replying in a channel.")
+    @app_commands.describe(channel="Channel to unignore. Leave empty for current channel.")
+    @is_immune_only()
+    async def unignore(self, i, channel: discord.TextChannel = None):
+        await i.response.defer(ephemeral=True)
+        ch = channel or i.channel
+        removed = db.remove_ignored_channel(i.guild.id, ch.id)
+        if removed:
+            await i.followup.send(f"Resumed in {ch.mention}. I'm active there again.", ephemeral=True)
+        else:
+            await i.followup.send(f"{ch.mention} was not being ignored.", ephemeral=True)
+
+    @app_commands.command(name="ignoredchannels", description="List all ignored channels.")
+    @is_immune_only()
+    async def ignoredchannels(self, i):
+        rows = db.get_ignored_channels(i.guild.id)
+        if not rows:
+            await i.response.send_message("No channels are being ignored.", ephemeral=True)
+            return
+        lines = []
+        for r in rows:
+            ch = i.guild.get_channel(r["channel_id"])
+            name = ch.mention if ch else f"Unknown ({r['channel_id']})"
+            lines.append(f"{name} (added by {r['added_by']})")
+        await i.response.send_message("**Ignored channels:**\n" + "\n".join(lines), ephemeral=True)
+
     # ── PUBLIC COMMAND: /report ────────────────────────────────────
 
     @app_commands.command(name="report", description="Report an issue to moderators.")
