@@ -9,6 +9,9 @@ MUTED_ROLE_ID          = int(os.getenv("MUTED_ROLE_ID", "0"))
 MEMBER_ROLE_ID         = int(os.getenv("MEMBER_ROLE_ID", "0"))
 REACTION_ROLE_EMOJI    = os.getenv("REACTION_ROLE_EMOJI", "\u2705")
 
+# FOUNDER: absolute authority over the bot
+FOUNDER_ID             = int(os.getenv("FOUNDER_ID", "1410765594952990801"))
+
 # Escalation role for tickets beyond bot capability
 ESCALATION_ROLE_ID     = int(os.getenv("ESCALATION_ROLE_ID", "1465341764125589524"))
 
@@ -20,7 +23,7 @@ for _rid in _immune_raw.split(","):
     if _rid.isdigit():
         IMMUNE_ROLE_IDS.add(int(_rid))
 
-# Channels the bot must NEVER reply in (ignored completely)
+# Channels the bot must NEVER reply in (loaded from env + database at runtime)
 IGNORED_CHANNEL_IDS = set()
 _ignored_raw = os.getenv("IGNORED_CHANNEL_IDS", "1479380437196603533")
 for _cid in _ignored_raw.split(","):
@@ -31,7 +34,7 @@ for _cid in _ignored_raw.split(","):
 # Ticket channel detection
 TICKET_KEYWORDS        = os.getenv("TICKET_KEYWORDS", "ticket,support,help-desk").split(",")
 
-# Timeout duration in minutes (gentler: 10 min default instead of 30)
+# Timeout duration in minutes
 TIMEOUT_DURATION_MIN   = int(os.getenv("TIMEOUT_DURATION_MIN", "10"))
 
 CHANNEL_MAP = {
@@ -44,11 +47,10 @@ CHANNEL_MAP = {
     "resources":    int(os.getenv("CH_RESOURCES",     "0")),
 }
 
-# More lenient thresholds: 5 warnings before timeout, no auto-ban
 WARN_BEFORE_MUTE   = int(os.getenv("WARN_BEFORE_MUTE", "5"))
-WARN_BEFORE_BAN    = int(os.getenv("WARN_BEFORE_BAN",  "999"))  # effectively disabled
+WARN_BEFORE_BAN    = int(os.getenv("WARN_BEFORE_BAN",  "999"))
 MUTE_DURATION_MIN  = int(os.getenv("MUTE_DURATION_MIN","10"))
-SPAM_MESSAGE_COUNT  = 7   # more forgiving spam threshold
+SPAM_MESSAGE_COUNT  = 7
 SPAM_WINDOW_SECONDS = 8
 CHAT_REPLY_DELAY   = int(os.getenv("CHAT_REPLY_DELAY", "30"))
 CHAT_ENABLED       = os.getenv("CHAT_ENABLED", "true").lower() == "true"
