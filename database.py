@@ -48,8 +48,14 @@ def init_db():
         message_id INTEGER, emoji TEXT, role_id INTEGER,
         description TEXT DEFAULT '', created_by TEXT
     );
+    CREATE TABLE IF NOT EXISTS ignored_channels (
+        channel_id INTEGER PRIMARY KEY, guild_id INTEGER,
+        added_by TEXT, added_at TEXT DEFAULT (datetime('now'))
+    );
     """)
     c.commit()
+    # Load ignored channels from DB into config at startup
+    _load_ignored_channels()
 
 def add_warning(gid, uid, mod, reason):
     c = _conn(); c.execute("INSERT INTO warnings (guild_id,user_id,moderator,reason) VALUES (?,?,?,?)", (gid,uid,mod,reason)); c.commit()
@@ -126,3 +132,33 @@ def remove_reaction_role(gid, mid, emoji):
     c = _conn(); cur = c.execute("DELETE FROM reaction_roles WHERE guild_id=? AND message_id=? AND emoji=?", (gid,mid,emoji)); c.commit(); return cur.rowcount > 0
 def remove_reaction_roles_for_message(gid, mid):
     c = _conn(); cur = c.execute("DELETE FROM reaction_roles WHERE guild_id=? AND message_id=?", (gid,mid)); c.commit(); return cur.rowcount
+
+# ── Ignored Channels (persistent) ─────────────────────────────────
+
+def _load_ignored_channels():
+    """Load ignored channels from DB into config.IGNORED_CHANNEL_IDS."""
+    import config
+    try:
+        rows = _conn().execute("SELECT channel_id FROM ignored_channels").fetchall()
+        for r in rows:
+            config.IGNORED_CHANNEL_IDS.add(r[0])
+    except:
+        pass
+
+def add_ignored_channel(gid, cid, added_by):
+    import config
+    c = _conn()
+    c.execute("INSERT OR IGNORE INTO ignored_channels (channel_id, guild_id, added_by) VALUES (?,?,?)", (cid, gid, added_by))
+    c.commit()
+    config.IGNORED_CHANNEL_IDS.add(cid)
+
+def remove_ignored_channel(gid, cid):
+    import config
+    c = _conn()
+    cur = c.execute("DELETE FROM ignored_channels WHERE channel_id=? AND guild_id=?", (cid, gid))
+    c.commit()
+    config.IGNORED_CHANNEL_IDS.discard(cid)
+    return cur.rowcount > 0
+
+def get_ignored_channels(gid):
+    return [dict(r) for r in _conn().execute("SELECT * FROM ignored_channels WHERE guild_id=?", (gid,)).fetchall()]
