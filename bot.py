@@ -42,40 +42,52 @@ class ModerationBot(commands.Bot):
 
     async def on_message(self, message):
         log.info(f"MSG: #{getattr(message.channel,'name','DM')} | {message.author} | {message.content[:100]!r}")
-        if message.author.bot: return
-        if message.guild is None:
-            await appeals.handle_dm(self, message); return
 
-        # FOUNDER COMMANDS: always process, even in ignored channels
+        # 1. Skip bot messages always
+        if message.author.bot:
+            return
+
+        # 2. DMs go to appeal handler only
+        if message.guild is None:
+            await appeals.handle_dm(self, message)
+            return
+
+        # 3. FOUNDER COMMANDS: always process first, even in ignored channels
         if moderation._is_founder(message.author):
             handled = await self._handle_founder_command(message)
             if handled:
                 return
 
-        # Completely ignore messages in ignored channels
+        # 4. Ignored channels: do absolutely nothing
         if moderation._is_ignored_channel(message.channel.id):
             return
 
+        # 5. Cancel any pending delayed replies (someone is talking)
         await chat.cancel_for_channel(message.channel.id)
+
+        # 6. Process prefix commands
         await self.process_commands(message)
 
-        # Airdrop scam check runs everywhere (except ignored channels, handled above)
-        # moderation.handle_message already checks for airdrop patterns
-
-        # Ticket channels
+        # 7. TICKET CHANNELS: only ticket handler replies, no chat/welcome overlap
         if tickets.is_ticket_channel(message.channel):
             await tickets.handle_ticket_message(self, message)
+            # Only run moderation for airdrop/phishing/spam (no LLM classify in tickets)
+            await moderation.handle_message_light(self, message)
+            return
+
+        # 8. BOT MENTIONED: reply via chat, skip welcome (avoid double reply)
+        if self.user.mentioned_in(message) and not message.mention_everyone:
+            log.info(f"BOT MENTIONED by {message.author}")
+            await chat.handle_mention(self, message)
             await moderation.handle_message(self, message)
             return
 
-        if self.user.mentioned_in(message) and not message.mention_everyone:
-            log.info(f"BOT MENTIONED by {message.author}")
-            handled = await welcome.answer_question(self, message)
-            if not handled: await chat.handle_mention(self, message)
+        # 9. Question in help channel: welcome handler
+        if await welcome.answer_question(self, message):
             await moderation.handle_message(self, message)
             return
-        handled = await welcome.answer_question(self, message)
-        if handled: return
+
+        # 10. Normal message: moderation + delayed chat reply
         await moderation.handle_message(self, message)
         await chat.schedule_delayed_reply(self, message)
 
@@ -85,7 +97,6 @@ class ModerationBot(commands.Bot):
 
         # "Don't reply in this channel" / "ignore this channel"
         if _IGNORE_CHANNEL_RE.search(content):
-            # Check if a specific channel is mentioned
             channel_mentions = message.channel_mentions
             if channel_mentions:
                 for ch in channel_mentions:
