@@ -70,6 +70,23 @@ async def handle_message(bot, message):
             await _handle_violation(bot, message, result)
 
 
+async def handle_message_light(bot, message):
+    """Light moderation for ticket channels: only airdrop scam, phishing, and spam.
+    No LLM classify to avoid double-replying in tickets."""
+    if message.author.bot or db.is_spam_exempt(message.author.id):
+        return
+    if _is_immune(message.author):
+        return
+    if _AIRDROP_SCAM_PATTERNS.search(message.content):
+        await _handle_airdrop_scam(bot, message)
+        return
+    if _PHISHING_PATTERNS.search(message.content):
+        await _handle_phishing(bot, message)
+        return
+    if _is_spam(message.author.id):
+        await _handle_spam(bot, message)
+
+
 async def _handle_airdrop_scam(bot, message):
     """Airdrop/wallet scam: delete message and ban immediately."""
     m, g = message.author, message.guild
