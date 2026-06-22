@@ -91,61 +91,52 @@ async def maybe_handle(bot, message) -> bool:
     text = _strip_mention(bot, message)
     key = (message.channel.id, message.author.id)
 
-    # 1. An active drafting session takes priority (the member is answering us).
+    # 1. An active session means the member is answering our questions -> draft now.
+    #    Strict two-turn flow: we ask everything once, then the very next reply drafts.
     sess = _get_session(key)
     if sess:
-        return await _continue_session(message, key, sess, text)
+        return await _draft_from_answers(message, key, sess, text)
 
     # 2. "what other platform can i use" after a draft.
     if _MORE_RE.search(text):
         await _send(message, recommendations.alternatives(_get_last(key)))
         return True
 
-    # 3. A fresh prompt request?
+    # 3. A fresh prompt request -> ask all the intake questions at once, in one message.
     if not wants_prompt(text):
         return False
-    category = curriculum.detect_category(text)
-    if category is None:
-        _set_session(key, "awaiting_category", None, text)
-        await _send(message, "happy to draft you a prompt. " + curriculum.GENERIC_CLARIFY)
-        return True
-    _set_session(key, "awaiting_details", category, text)
+    category = curriculum.detect_category(text)  # may be None -> generic intake/blueprint
+    _set_session(key, "answering", category, text)
     await _send(message, prompttemplates.intake(category))
+    log.info(f"prompt session opened for {message.author} (category={category})")
     return True
 
 
-async def _continue_session(message, key, sess, text) -> bool:
-    if sess["stage"] == "awaiting_category":
-        # Whatever they said, lock a category (may be None -> generic) and ask for details.
-        category = curriculum.detect_category(text)
-        sess["category"] = category
-        sess["stage"] = "awaiting_details"
-        sess["request"] = (sess.get("request", "") + " " + text).strip()
-        sess["ts"] = _now()
-        await _send(message, prompttemplates.intake(category))
-        return True
-
-    # awaiting_details -> draft the prompt now.
-    category = sess.get("category")
+async def _draft_from_answers(message, key, sess, answers) -> bool:
+    """The member just answered the intake questions. Draft the prompt and finish."""
     request = sess.get("request", "")
-    _sessions.pop(key, None)
+    # Resolve a category from anything we have, falling back to a generic blueprint.
+    category = sess.get("category") or curriculum.detect_category(answers) \
+        or curriculum.detect_category(request)
+    _sessions.pop(key, None)          # one-shot: clear before drafting so we never loop
     _set_last(key, category)
 
-    label = category or "requested output"
+    draft = None
     try:
-        async with message.channel.typing():
-            draft = await llm.draft_prompt(
-                label, prompttemplates.blueprint(category), text, request
-            )
+        draft = await llm.draft_prompt(
+            category or "requested output",
+            prompttemplates.blueprint(category),
+            answers, request,
+        )
     except Exception as e:
         log.error(f"draft_prompt failed: {e}")
-        draft = None
 
-    if not draft:
-        await _send(message, "i hit a snag drafting that one. give me a moment and ask again.")
+    if not draft or not draft.strip():
+        await _send(message, "i couldn't draft that one just now. tag me and try again in a moment.")
         return True
 
     await _deliver(message, category, draft.strip())
+    log.info(f"prompt drafted for {message.author} (category={category}, {len(draft)} chars)")
     return True
 
 
