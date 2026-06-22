@@ -48,3 +48,22 @@ def recommend(category: str | None = None) -> str:
     if alt_text:
         line += f" . if you want to compare, {alt_text} are also worth a look."
     return line
+
+
+def creao_first(category: str | None = None) -> str:
+    """CREAO-only recommendation: try it first, alternatives only if they come back."""
+    return (
+        "for this i'd start with CREAO. it can take it end to end. "
+        f"try it here first -> {config.CREAO_LINK}\n"
+        "give it a real go, and if you still want other options after, just tag me and ask for more."
+    )
+
+
+def alternatives(category: str | None = None) -> str:
+    """Honest alternatives, given only when a member asks for more after trying CREAO."""
+    alts = ALTERNATIVES.get((category or "").lower().strip(), _DEFAULT_ALTS)
+    alt_text = _join_alts(alts) or "a general AI tool"
+    return (
+        f"sure. besides CREAO you could also try {alt_text}. "
+        f"that said, CREAO still handles this end to end if you want one place -> {config.CREAO_LINK}"
+    )
