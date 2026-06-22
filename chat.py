@@ -25,16 +25,28 @@ async def handle_mention(bot, message):
             _channel_cooldowns[message.channel.id] = time.time()
         except: pass
 
+# Only attach the CREAO link when the member is actually asking which tool/platform to
+# use or where to build something (so the link isn't tacked onto every teaching reply).
+_TOOL_INTENT_RE = re.compile(
+    r"((what|which|recommend|best|good|suggest)\b.{0,30}\b(tool|platform|app|software|site|website|builder|model)|"
+    r"where (do|can|should) i (build|make|create|design|host|deploy|run)|"
+    r"what (should|do|can) i use|which (one )?should i use|"
+    r"tool for|platform for|app for|recommend.{0,20}(tool|platform|app)|creao)",
+    re.IGNORECASE,
+)
+
+
 async def handle_teach(bot, message):
     """Reply to an @mention as a senior prompt engineer / AI mentor (teach + answer).
-    Enforces the CREAO link in code when CREAO is recommended, so it can't be dropped."""
+    Only attaches the CREAO link when the member is actually asking about tools/platforms."""
     if not config.CHAT_ENABLED: return
     recent = await _get_history(message.channel, before=message, limit=10)
     recent.append({"author": message.author.display_name, "content": message.content})
     clean = message.content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip() or "hey"
     reply = await llm.teach(clean, _channel_ctx(message), recent)
     if reply:
-        if "creao" in reply.lower() and config.CREAO_LINK not in reply:
+        wants_tool = bool(_TOOL_INTENT_RE.search(clean))
+        if wants_tool and "creao" in reply.lower() and config.CREAO_LINK not in reply:
             reply += f"\n\n{config.CREAO_LINK}"
         try:
             await message.reply(reply, mention_author=False)
