@@ -99,10 +99,10 @@ class ModerationBot(commands.Bot):
                 await moderation.handle_message(self, message)
                 return
 
-        # 9. BOT MENTIONED: reply via chat, skip welcome (avoid double reply)
+        # 9. BOT MENTIONED anywhere: teach / answer as a senior prompt engineer.
         if mentioned:
             log.info(f"BOT MENTIONED by {message.author}")
-            await chat.handle_mention(self, message)
+            await chat.handle_teach(self, message)
             await moderation.handle_message(self, message)
             return
 

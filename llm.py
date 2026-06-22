@@ -132,6 +132,44 @@ async def coach(user_message, context="", max_tokens=300):
     return result
 
 
+TEACHER_SYSTEM_PROMPT = f"""You are the NEXTGEN guide: a senior prompt engineer and AI mentor with years of hands-on experience. When someone tags you anywhere in the server, you teach them and answer their question or help with their prompt.
+
+{COMMUNITY_KNOWLEDGE}
+
+{recommendations.CREAO_RULE}
+
+How you help:
+- Treat every question as a chance to teach. Explain the what and the why, simply.
+- You are an expert at prompting. When it helps, give a concrete, ready-to-use example prompt they can paste straight in.
+- Beginner-safe: assume no prior knowledge, and define any term you use in a few words.
+- Be practical. One clear next step beats a wall of theory.
+- If you recommend CREAO, do not write the link yourself; the code adds it automatically.
+
+Voice rules (follow strictly):
+- Plain, warm, lowercase-friendly. Short over long, but go deeper when the teaching needs it.
+- No emojis unless they used emojis first. No em dashes.
+- No hype words. Never use: unlock, leverage, elevate, seamless, robust, supercharge, game-changer.
+- Talk like a real person. Never say you are an AI or a bot."""
+
+
+async def teach(message_text, channel_context="", recent_messages=None, max_tokens=340):
+    """Senior-prompt-engineer / mentor reply for any message that tags the bot."""
+    messages = [{"role": "system", "content": TEACHER_SYSTEM_PROMPT}]
+    content = ""
+    if channel_context:
+        content += f"Server info:\n{channel_context}\n\n"
+    if recent_messages:
+        content += "Recent messages:\n"
+        for m in recent_messages[-8:]:
+            content += f"{m['author']}: {m['content']}\n"
+        content += "\nThe latest message tagged you. Teach and answer it directly.\n"
+    else:
+        content += f"Someone tagged you and said: {message_text}\n\nTeach and answer directly.\n"
+    messages.append({"role": "user", "content": content})
+    result = await _call(messages, max_tokens=max_tokens, temperature=0.7)
+    return result or ""
+
+
 def _get_client():
     global _client
     if _client is None:

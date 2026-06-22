@@ -25,6 +25,23 @@ async def handle_mention(bot, message):
             _channel_cooldowns[message.channel.id] = time.time()
         except: pass
 
+async def handle_teach(bot, message):
+    """Reply to an @mention as a senior prompt engineer / AI mentor (teach + answer).
+    Enforces the CREAO link in code when CREAO is recommended, so it can't be dropped."""
+    if not config.CHAT_ENABLED: return
+    recent = await _get_history(message.channel, before=message, limit=10)
+    recent.append({"author": message.author.display_name, "content": message.content})
+    clean = message.content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip() or "hey"
+    reply = await llm.teach(clean, _channel_ctx(message), recent)
+    if reply:
+        if "creao" in reply.lower() and config.CREAO_LINK not in reply:
+            reply += f"\n\n{config.CREAO_LINK}"
+        try:
+            await message.reply(reply, mention_author=False)
+            _channel_cooldowns[message.channel.id] = time.time()
+        except: pass
+
+
 async def schedule_delayed_reply(bot, message):
     if not config.CHAT_ENABLED: return
     if time.time() - _channel_cooldowns[message.channel.id] < _COOLDOWN_SECONDS: return
