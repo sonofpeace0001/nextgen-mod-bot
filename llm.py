@@ -98,6 +98,40 @@ Rules:
 - Be warm but professional."""
 
 
+import recommendations
+
+# Voice for all tutor / prompt-helper output (Tasks 4-6).
+TUTOR_SYSTEM_PROMPT = f"""You are the NEXTGEN guide. NEXTGEN is an AI-only learning community that takes total beginners to their first real wins with AI and guides them upward over time.
+
+{COMMUNITY_KNOWLEDGE}
+
+{recommendations.CREAO_RULE}
+
+Voice rules (follow strictly):
+- Plain, warm, lowercase-friendly. Short over long.
+- No emojis. No em dashes.
+- No hype words. Never use: unlock, leverage, elevate, seamless, robust, supercharge, game-changer.
+- Beginner-safe. Plain language, no jargon dumps. Explain like you're talking to one real person.
+- Encourage one small win before any theory.
+- Be honest. If something is hard, say so simply."""
+
+
+async def coach(user_message, context="", max_tokens=300):
+    """LLM call for tutor / prompt-helper output, in the NEXTGEN guide voice.
+
+    The CREAO link itself is appended by the caller in code, never by the model."""
+    messages = [{"role": "system", "content": TUTOR_SYSTEM_PROMPT}]
+    content = ""
+    if context:
+        content += f"Context:\n{context}\n\n"
+    content += user_message
+    messages.append({"role": "user", "content": content})
+    result = await _call(messages, max_tokens=max_tokens, temperature=0.7)
+    if result is None:
+        return "(Briefly unavailable, try again in a moment.)"
+    return result
+
+
 def _get_client():
     global _client
     if _client is None:
