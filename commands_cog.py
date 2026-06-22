@@ -163,6 +163,44 @@ class ModCog(commands.Cog):
         t = await llm.generate("Give a concise, friendly overview of the server channels.", context=wm.CHANNEL_GUIDE, max_tokens=250)
         await i.response.send_message(t, ephemeral=True)
 
+    @app_commands.command(name="announce", description="Post an announcement as an embed card.")
+    @app_commands.describe(
+        title="Headline of the announcement.",
+        message="Body text. Use \\n for line breaks.",
+        channel="Where to post. Defaults to the announcements channel.",
+        ping="Ping @everyone with it (default no).",
+    )
+    @is_immune_only()
+    async def announce(self, i, title: str, message: str,
+                       channel: discord.TextChannel = None, ping: bool = False):
+        await i.response.defer(ephemeral=True)
+        target = channel or i.guild.get_channel(config.ANNOUNCEMENT_CHANNEL_ID)
+        if not target:
+            await i.followup.send(
+                "No target channel. Pass a channel, or set ANNOUNCEMENT_CHANNEL_ID.",
+                ephemeral=True)
+            return
+        e = discord.Embed(
+            title=title[:256],
+            description=message.replace("\\n", "\n")[:4000],
+            color=discord.Color.blurple(),
+            timestamp=datetime.datetime.utcnow(),
+        )
+        icon = i.guild.icon.url if i.guild.icon else None
+        e.set_author(name=i.guild.name, icon_url=icon)
+        e.set_footer(text=f"Posted by {i.user.display_name}")
+        content = "@everyone" if ping else None
+        try:
+            await target.send(
+                content=content, embed=e,
+                allowed_mentions=discord.AllowedMentions(everyone=ping),
+            )
+        except discord.Forbidden:
+            await i.followup.send(f"I can't post in {target.mention} (missing permissions).", ephemeral=True)
+            return
+        db.log_action(i.guild.id, "ANNOUNCE", i.user.id, str(i.user), title[:200])
+        await i.followup.send(f"Announcement posted in {target.mention}.", ephemeral=True)
+
     # ── CHANNEL IGNORE MANAGEMENT ─────────────────────────────────
 
     @app_commands.command(name="ignore", description="Make the bot ignore a channel (no replies, no moderation).")

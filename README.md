@@ -10,7 +10,9 @@ Autonomous Discord moderation bot with AI-powered chat (Groq/Llama 3.3 70B), aut
 - Member reports with mod action buttons
 - Reaction roles
 - Mod notes on user profiles
-- Slash commands: /warn /mute /unmute /ban /tempban /purge /warnings /clearwarnings /modlog /slowmode /lookup /note /reactionrole /report /guide
+- Slash commands: /warn /mute /unmute /ban /tempban /purge /warnings /clearwarnings /modlog /slowmode /lookup /note /reactionrole /report /guide /announce
+- **/announce**: post an announcement as a Discord embed card (mod-only); defaults to the announcements channel, optional @everyone ping
+- **Tag-to-teach**: @mention the bot anywhere and it answers as a senior prompt engineer / AI mentor — questions, explanations, and ready-to-paste prompts
 - **Welcome DM**: new members get one onboarding question; replies are forwarded to a private staff channel (falls back to the public greet if DMs are closed)
 - **Daily prompt**: one community prompt posted to a public channel each day at a fixed local time, rotating through a 14-prompt bank (state persisted across restarts)
 - **Tutor**: structured AI-skills path across five tiers (novice -> beginner -> intermediate -> advanced -> grandmaster), scaled to each member's level
