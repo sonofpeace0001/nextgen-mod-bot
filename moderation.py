@@ -232,6 +232,27 @@ async def _mute(bot, guild, member, reason):
     await _timeout(bot, guild, member, reason)
 
 
+async def _ban(bot, guild, member, reason):
+    """Manual ban (used by the report 'Ban' button). DM first, ban, log."""
+    try:
+        t = await llm.generate(
+            f"Tell this member they have been banned from NEXTGEN. Reason: {reason}. "
+            f"Be respectful but firm. Let them know they can DM the bot the word 'appeal' to appeal."
+        )
+        await member.send(t)
+    except Exception:
+        pass
+    try:
+        await guild.ban(member, reason=reason, delete_message_days=0)
+        log.info(f"BANNED {member}: {reason}")
+    except discord.Forbidden:
+        log.warning(f"Cannot ban {member}: missing permissions or higher role")
+    except Exception as e:
+        log.error(f"Ban error for {member}: {e}")
+    db.log_action(guild.id, "BAN", member.id, "Moderator", reason)
+    await _post_log(bot, guild, "BAN", member, reason)
+
+
 async def _auto_unmute(member, role, minutes):
     await asyncio.sleep(minutes * 60)
     try: await member.remove_roles(role, reason="Mute expired")
