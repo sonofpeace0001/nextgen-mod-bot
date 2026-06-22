@@ -66,6 +66,12 @@ def _get_session(key):
     return None
 
 
+def has_active_session(channel_id, user_id) -> bool:
+    """True if this member has an open drafting session in this channel, so the router can
+    keep routing their replies to the prompt-helper without requiring a re-mention."""
+    return _get_session((channel_id, user_id)) is not None
+
+
 def _set_session(key, stage, category, request):
     _sessions[key] = {"stage": stage, "category": category, "request": request, "ts": _now()}
 

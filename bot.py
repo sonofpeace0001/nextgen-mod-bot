@@ -90,12 +90,20 @@ class ModerationBot(commands.Bot):
             await moderation.handle_message_light(self, message)
             return
 
-        # 8. TUTOR / PROMPT-HELPER: only when mentioned or in the help channel.
+        # 8. TUTOR / PROMPT-HELPER: fire when mentioned, in the help channel, OR when the
+        #    member is mid prompt-drafting (so their answers continue without re-tagging).
         #    If either handles it, skip chat.py (and the delayed reply) to avoid double-replying.
         mentioned = self.user.mentioned_in(message) and not message.mention_everyone
         in_help = message.channel.id == config.CHANNEL_MAP.get("help", 0)
-        if mentioned or in_help:
-            if await tutor.maybe_handle(self, message) or await prompthelper.maybe_handle(self, message):
+        drafting = prompthelper.has_active_session(message.channel.id, message.author.id)
+        if mentioned or in_help or drafting:
+            # Mid-session: go straight to the prompt-helper (don't let the tutor hijack answers).
+            handled = False
+            if not drafting:
+                handled = await tutor.maybe_handle(self, message)
+            if not handled:
+                handled = await prompthelper.maybe_handle(self, message)
+            if handled:
                 await moderation.handle_message(self, message)
                 return
 
