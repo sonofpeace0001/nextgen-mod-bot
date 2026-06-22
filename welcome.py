@@ -64,9 +64,11 @@ async def handle_welcome_reply(bot, message) -> bool:
     except Exception as e:
         log.error(f"Failed to set level from welcome reply: {e}")
 
-    # Forward to the private staff channel with username + id.
-    if guild and config.STAFF_CHANNEL_ID:
-        ch = guild.get_channel(config.STAFF_CHANNEL_ID)
+    # Forward to staff. Prefer STAFF_CHANNEL_ID; fall back to the log channel so an
+    # intro reply is never silently dropped (the bot promises "i read every reply").
+    target_id = config.STAFF_CHANNEL_ID or config.LOG_CHANNEL_ID
+    if guild and target_id:
+        ch = guild.get_channel(target_id)
         if ch:
             e = discord.Embed(title="New member intro reply", color=discord.Color.blurple())
             e.add_field(name="Member", value=f"{message.author} ({message.author.id})", inline=False)
@@ -74,9 +76,11 @@ async def handle_welcome_reply(bot, message) -> bool:
             try:
                 await ch.send(embed=e)
             except Exception as ex:
-                log.error(f"Failed to forward welcome reply to staff channel: {ex}")
+                log.error(f"Failed to forward welcome reply: {ex}")
         else:
-            log.warning("STAFF_CHANNEL_ID set but channel not found.")
+            log.warning("Welcome-reply target channel (STAFF/LOG) not found.")
+    else:
+        log.warning("No STAFF_CHANNEL_ID or LOG_CHANNEL_ID set; welcome reply not forwarded.")
 
     db.clear_awaiting_reply(message.author.id)
     try:
