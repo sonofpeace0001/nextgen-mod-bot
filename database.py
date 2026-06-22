@@ -52,6 +52,16 @@ def init_db():
         channel_id INTEGER PRIMARY KEY, guild_id INTEGER,
         added_by TEXT, added_at TEXT DEFAULT (datetime('now'))
     );
+    CREATE TABLE IF NOT EXISTS welcomed_users (
+        user_id INTEGER PRIMARY KEY, guild_id INTEGER,
+        awaiting_reply INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS member_level (
+        user_id INTEGER PRIMARY KEY, level TEXT DEFAULT 'novice'
+    );
+    CREATE TABLE IF NOT EXISTS kv_store (
+        key TEXT PRIMARY KEY, value TEXT
+    );
     """)
     c.commit()
     # Load ignored channels from DB into config at startup
@@ -162,3 +172,43 @@ def remove_ignored_channel(gid, cid):
 
 def get_ignored_channels(gid):
     return [dict(r) for r in _conn().execute("SELECT * FROM ignored_channels WHERE guild_id=?", (gid,)).fetchall()]
+
+# ── Welcome DM tracking (Task 1) ──────────────────────────────────
+
+def add_welcomed_user(uid, gid):
+    c = _conn()
+    c.execute(
+        "INSERT OR REPLACE INTO welcomed_users (user_id, guild_id, awaiting_reply, created_at) "
+        "VALUES (?,?,1,datetime('now'))",
+        (uid, gid),
+    )
+    c.commit()
+
+def get_welcomed_user(uid):
+    r = _conn().execute("SELECT * FROM welcomed_users WHERE user_id=?", (uid,)).fetchone()
+    return dict(r) if r else None
+
+def clear_awaiting_reply(uid):
+    c = _conn(); c.execute("UPDATE welcomed_users SET awaiting_reply=0 WHERE user_id=?", (uid,)); c.commit()
+
+# ── Member skill level (Task 5) ───────────────────────────────────
+
+def set_member_level(uid, level):
+    c = _conn()
+    c.execute("INSERT OR REPLACE INTO member_level (user_id, level) VALUES (?,?)", (uid, level))
+    c.commit()
+
+def get_member_level(uid):
+    r = _conn().execute("SELECT level FROM member_level WHERE user_id=?", (uid,)).fetchone()
+    return r[0] if r else None
+
+# ── Tiny key/value store (Task 2 prompt index, etc.) ──────────────
+
+def kv_get(key, default=None):
+    r = _conn().execute("SELECT value FROM kv_store WHERE key=?", (key,)).fetchone()
+    return r[0] if r else default
+
+def kv_set(key, value):
+    c = _conn()
+    c.execute("INSERT OR REPLACE INTO kv_store (key, value) VALUES (?,?)", (key, str(value)))
+    c.commit()

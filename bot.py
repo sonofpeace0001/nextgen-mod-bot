@@ -4,10 +4,21 @@ import asyncio, logging, traceback, sys, re
 import discord
 from discord.ext import commands
 import config, database as db, moderation, welcome, appeals, reports, roles, chat, tickets
+import tutor, prompthelper, prompts
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", stream=sys.stdout)
 log = logging.getLogger("mod-agent")
-intents = discord.Intents.all()
+
+# Narrowed intents: only what the bot actually uses. Presence is intentionally OFF.
+# members + message_content are privileged and must be enabled in the Developer Portal.
+# dm_messages is required for ban appeals and welcome-DM replies; reactions for reaction roles.
+intents = discord.Intents.none()
+intents.guilds = True
+intents.members = True
+intents.message_content = True
+intents.guild_messages = True
+intents.dm_messages = True
+intents.reactions = True
 
 # Patterns for founder commands (natural language)
 _IGNORE_CHANNEL_RE = re.compile(
@@ -39,6 +50,7 @@ class ModerationBot(commands.Bot):
         for g in self.guilds:
             me = g.me
             log.info(f"Guild '{g.name}': administrator={me.guild_permissions.administrator}")
+        prompts.start(self)  # daily prompt scheduler (no-op if PROMPT_CHANNEL_ID unset)
 
     async def on_message(self, message):
         log.info(f"MSG: #{getattr(message.channel,'name','DM')} | {message.author} | {message.content[:100]!r}")
@@ -47,8 +59,10 @@ class ModerationBot(commands.Bot):
         if message.author.bot:
             return
 
-        # 2. DMs go to appeal handler only
+        # 2. DMs: welcome-DM replies first, otherwise the appeal handler (unchanged).
         if message.guild is None:
+            if await welcome.handle_welcome_reply(self, message):
+                return
             await appeals.handle_dm(self, message)
             return
 
@@ -68,26 +82,36 @@ class ModerationBot(commands.Bot):
         # 6. Process prefix commands
         await self.process_commands(message)
 
-        # 7. TICKET CHANNELS: only ticket handler replies, no chat/welcome overlap
+        # 7. TICKET CHANNELS: light moderation always; auto-reply only if not disabled.
         if tickets.is_ticket_channel(message.channel):
-            await tickets.handle_ticket_message(self, message)
-            # Only run moderation for airdrop/phishing/spam (no LLM classify in tickets)
+            if not config.DISABLE_TICKET_REPLIES:
+                await tickets.handle_ticket_message(self, message)
+            # Light moderation (airdrop/phishing/spam) still runs even when replies are off.
             await moderation.handle_message_light(self, message)
             return
 
-        # 8. BOT MENTIONED: reply via chat, skip welcome (avoid double reply)
-        if self.user.mentioned_in(message) and not message.mention_everyone:
+        # 8. TUTOR / PROMPT-HELPER: only when mentioned or in the help channel.
+        #    If either handles it, skip chat.py (and the delayed reply) to avoid double-replying.
+        mentioned = self.user.mentioned_in(message) and not message.mention_everyone
+        in_help = message.channel.id == config.CHANNEL_MAP.get("help", 0)
+        if mentioned or in_help:
+            if await tutor.maybe_handle(self, message) or await prompthelper.maybe_handle(self, message):
+                await moderation.handle_message(self, message)
+                return
+
+        # 9. BOT MENTIONED: reply via chat, skip welcome (avoid double reply)
+        if mentioned:
             log.info(f"BOT MENTIONED by {message.author}")
             await chat.handle_mention(self, message)
             await moderation.handle_message(self, message)
             return
 
-        # 9. Question in help channel: welcome handler
+        # 10. Question in help channel: welcome handler
         if await welcome.answer_question(self, message):
             await moderation.handle_message(self, message)
             return
 
-        # 10. Normal message: moderation + delayed chat reply
+        # 11. Normal message: moderation + delayed chat reply
         await moderation.handle_message(self, message)
         await chat.schedule_delayed_reply(self, message)
 
@@ -134,7 +158,10 @@ class ModerationBot(commands.Bot):
     async def on_member_join(self, member):
         log.info(f"MEMBER JOIN: {member} ({member.id})")
         await roles.assign_default_role(self, member)
-        await welcome.greet_member(self, member)
+        # Welcome DM with one onboarding question; fall back to public greet if DMs are closed.
+        sent = await welcome.send_welcome_dm(self, member)
+        if not sent:
+            await welcome.greet_member(self, member)
     async def on_raw_reaction_add(self, payload):
         if payload.user_id == self.user.id: return
         await roles.handle_reaction_add(self, payload)

@@ -31,6 +31,26 @@ for _cid in _ignored_raw.split(","):
     if _cid.isdigit():
         IGNORED_CHANNEL_IDS.add(int(_cid))
 
+# Announcements channel: treated like an ignored channel so the bot never sends
+# conversational / tutor / chat / prompt messages there.
+ANNOUNCEMENT_CHANNEL_ID = int(os.getenv("ANNOUNCEMENT_CHANNEL_ID", "0"))
+if ANNOUNCEMENT_CHANNEL_ID:
+    IGNORED_CHANNEL_IDS.add(ANNOUNCEMENT_CHANNEL_ID)
+
+# Private staff channel that welcome-DM replies are forwarded to (Task 1).
+STAFF_CHANNEL_ID = int(os.getenv("STAFF_CHANNEL_ID", "0"))
+
+# Daily prompt scheduler (Task 2): public channel + fixed local time.
+PROMPT_CHANNEL_ID = int(os.getenv("PROMPT_CHANNEL_ID", "0"))
+PROMPT_HOUR       = int(os.getenv("PROMPT_HOUR", "19"))
+PROMPT_TZ         = os.getenv("PROMPT_TZ", "Africa/Lagos")
+
+# When true, the bot does NOT auto-reply in ticket channels (light moderation still runs).
+DISABLE_TICKET_REPLIES = os.getenv("DISABLE_TICKET_REPLIES", "true").lower() == "true"
+
+# CREAO is the first-recommended platform everywhere. Link is fixed and enforced in code.
+CREAO_LINK = os.getenv("CREAO_LINK", "https://creao.ai/@Sonofpeace")
+
 # Ticket channel detection
 TICKET_KEYWORDS        = os.getenv("TICKET_KEYWORDS", "ticket,support,help-desk").split(",")
 
