@@ -16,7 +16,7 @@ Autonomous Discord moderation bot with AI-powered chat (Groq/Llama 3.3 70B), aut
 - **Welcome DM**: new members get one onboarding question; replies are forwarded to a private staff channel (falls back to the public greet if DMs are closed)
 - **Daily prompt**: one community prompt posted to a public channel each day at a fixed local time, rotating through a 14-prompt bank (state persisted across restarts)
 - **Tutor**: structured AI-skills path across five tiers (novice -> beginner -> intermediate -> advanced -> grandmaster), scaled to each member's level
-- **Prompt helper**: describe what you want to make and get a ready-to-paste, well-structured prompt for the right tool
+- **Prompt helper**: tag the bot for a prompt (graphic, tweet, thread, video, landing page, app, ...) and it acts like a senior prompt engineer — asks a few quick intake questions, then drafts a premium, ready-to-paste prompt; recommends CREAO first (try it first; alternatives only when you come back and ask)
 - **CREAO-first recommendations**: every tool rec starts with CREAO, then honest alternatives
 - Channel silencing: never replies in announcements; ticket auto-replies are off by default (light moderation still runs)
 

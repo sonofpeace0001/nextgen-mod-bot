@@ -152,6 +152,34 @@ Voice rules (follow strictly):
 - Talk like a real person. Never say you are an AI or a bot."""
 
 
+PROMPT_ENGINEER_SYSTEM = f"""You are a senior prompt engineer with years of experience. You write premium, ready-to-paste prompts that get great results in AI tools.
+
+{recommendations.CREAO_RULE}
+
+Rules for the prompt you write:
+- Follow the provided BLUEPRINT exactly, keeping its labelled sections in order.
+- Be specific and complete. Fill every section using the member's answers; if an answer is missing, choose a sensible professional default and keep going.
+- Write the prompt at a professional standard: clear section headers, capitalised where it reads well. This is the deliverable the member pastes into a tool, not a chat message, so it does not need to be lowercase or casual.
+- Output ONLY the prompt itself. No preamble, no sign-off, no tool links or platform names (the code adds the tool recommendation separately)."""
+
+
+async def draft_prompt(category, blueprint, answers, original_request, max_tokens=1300):
+    """Draft a complete, ready-to-paste prompt for the given category using the blueprint
+    and the member's answers. Returns the prompt text, or None on failure."""
+    user = (
+        f"Output type: {category}.\n\n"
+        f"BLUEPRINT to follow:\n{blueprint}\n\n"
+        f"Member's original request:\n{original_request}\n\n"
+        f"Member's answers:\n{answers}\n\n"
+        f"Write the complete, ready-to-paste {category} prompt now."
+    )
+    messages = [
+        {"role": "system", "content": PROMPT_ENGINEER_SYSTEM},
+        {"role": "user", "content": user},
+    ]
+    return await _call(messages, max_tokens=max_tokens, temperature=0.6)
+
+
 async def teach(message_text, channel_context="", recent_messages=None, max_tokens=340):
     """Senior-prompt-engineer / mentor reply for any message that tags the bot."""
     messages = [{"role": "system", "content": TEACHER_SYSTEM_PROMPT}]
