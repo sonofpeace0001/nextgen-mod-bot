@@ -59,9 +59,10 @@ async def maybe_handle(bot, message) -> bool:
         max_tokens=260,
     )
 
-    reply = f"{guidance}\n\n{recommendations.recommend(category)}"
+    # Guidance as plain text; the CREAO rec rides along in an embed so the link shows as "CREAO AI".
+    rec_embed = recommendations.embed(recommendations.recommend(category))
     try:
-        await message.reply(reply, mention_author=False)
+        await message.reply(content=guidance, embed=rec_embed, mention_author=False)
     except Exception as e:
         log.error(f"tutor reply failed: {e}")
     return True
