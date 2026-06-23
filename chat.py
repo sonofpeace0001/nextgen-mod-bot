@@ -2,7 +2,7 @@
 from __future__ import annotations
 import asyncio, logging, time, re
 from collections import defaultdict
-import discord, config, llm
+import discord, config, llm, recommendations
 
 log = logging.getLogger("chat")
 _pending_replies = {}
@@ -45,12 +45,13 @@ async def handle_teach(bot, message):
     clean = message.content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip() or "hey"
     reply = await llm.teach(clean, _channel_ctx(message), recent)
     if reply:
-        wants_tool = bool(_TOOL_INTENT_RE.search(clean))
-        if wants_tool and "creao" in reply.lower() and config.CREAO_LINK not in reply:
-            reply += f"\n\n{config.CREAO_LINK}"
+        # Only attach the CREAO link (as a masked "CREAO AI" embed) on a real tool question.
+        add_creao = bool(_TOOL_INTENT_RE.search(clean)) and "creao" in reply.lower()
         try:
             await message.reply(reply, mention_author=False)
             _channel_cooldowns[message.channel.id] = time.time()
+            if add_creao:
+                await message.channel.send(embed=recommendations.embed(f"try it here: {recommendations.CREAO_MD}"))
         except: pass
 
 

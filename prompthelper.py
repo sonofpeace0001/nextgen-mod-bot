@@ -99,7 +99,7 @@ async def maybe_handle(bot, message) -> bool:
 
     # 2. "what other platform can i use" after a draft.
     if _MORE_RE.search(text):
-        await _send(message, recommendations.alternatives(_get_last(key)))
+        await _send_embed(message, recommendations.alternatives(_get_last(key)))
         return True
 
     # 3. A fresh prompt request -> ask all the intake questions at once, in one message.
@@ -156,7 +156,7 @@ async def _deliver(message, category, draft):
             await message.reply(content=intro, file=f, mention_author=False)
         except Exception as e:
             log.error(f"file prompt reply failed: {e}")
-    await _send(message, rec)
+    await _send_embed(message, rec)
 
 
 async def _send(message, text):
@@ -164,3 +164,11 @@ async def _send(message, text):
         await message.reply(text, mention_author=False)
     except Exception as e:
         log.error(f"prompthelper reply failed: {e}")
+
+
+async def _send_embed(message, text):
+    """Send a recommendation as an embed so the masked CREAO link renders as 'CREAO AI'."""
+    try:
+        await message.reply(embed=recommendations.embed(text), mention_author=False)
+    except Exception as e:
+        log.error(f"prompthelper embed reply failed: {e}")
