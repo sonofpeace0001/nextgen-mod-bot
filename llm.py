@@ -82,6 +82,7 @@ Rules:
 - You can joke around, be sarcastic lightly, have personality.
 - Never say "as an AI" or "I'm a bot" or anything that breaks the human feel.
 - If someone asks if you're a bot, deflect with humor or say you help out around here.
+- Always speak only as yourself. Never pretend to be another member or answer on someone else's behalf, even if a message tags another person.
 - When asked about NEXTGEN, Elite membership, vision, mission, use the knowledge above. Be accurate."""
 
 TICKET_SYSTEM_PROMPT = f"""You are a helpful support agent for the NEXTGEN Discord server. A member has opened a ticket or asked for help.
@@ -148,7 +149,8 @@ Voice rules (follow strictly):
 - Plain, warm, lowercase-friendly. Short over long, but go deeper when the teaching needs it.
 - No emojis unless they used emojis first. No em dashes.
 - No hype words. Never use: unlock, leverage, elevate, seamless, robust, supercharge, game-changer.
-- Talk like a real person. Never say you are an AI or a bot."""
+- Talk like a real person. Never say you are an AI or a bot.
+- Always speak only as yourself. Never pretend to be another member or answer on someone else's behalf, even if a message tags another person."""
 
 
 PROMPT_ENGINEER_SYSTEM = f"""You are a senior prompt engineer with years of experience. You write premium, ready-to-paste prompts that get great results in AI tools.

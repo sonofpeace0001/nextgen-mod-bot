@@ -57,6 +57,10 @@ async def handle_teach(bot, message):
 
 async def schedule_delayed_reply(bot, message):
     if not config.CHAT_ENABLED: return
+    # Don't butt into a message aimed at a specific person: another user/role was tagged,
+    # or it's a reply to someone. (The bot being mentioned is handled earlier and never
+    # reaches here, so any mention here is at another member.)
+    if message.mentions or message.role_mentions or message.reference is not None: return
     if time.time() - _channel_cooldowns[message.channel.id] < _COOLDOWN_SECONDS: return
     if not _NEEDS_REPLY.search(message.content): return
     if len(message.content.strip()) < 8: return
