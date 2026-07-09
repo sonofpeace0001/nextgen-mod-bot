@@ -135,14 +135,17 @@ async def _draft_from_answers(message, key, sess, answers) -> bool:
         await _send(message, "i couldn't draft that one just now. tag me and try again in a moment.")
         return True
 
-    await _deliver(message, category, draft.strip())
+    await _deliver(message, category, draft.strip(), f"{request} {answers}")
     log.info(f"prompt drafted for {message.author} (category={category}, {len(draft)} chars)")
     return True
 
 
-async def _deliver(message, category, draft):
+async def _deliver(message, category, draft, context_text=""):
     intro = "here's your prompt, built to paste straight in:"
     rec = recommendations.creao_first(category)
+    ctx = recommendations.contextual_extra(context_text)
+    if ctx:
+        rec = rec + "\n\n" + ctx
     fits_inline = len(draft) <= 1800 and "```" not in draft
     if fits_inline:
         try:

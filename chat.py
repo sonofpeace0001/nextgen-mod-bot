@@ -45,13 +45,20 @@ async def handle_teach(bot, message):
     clean = message.content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip() or "hey"
     reply = await llm.teach(clean, _channel_ctx(message), recent)
     if reply:
-        # Only attach the CREAO link (as a masked "CREAO AI" embed) on a real tool question.
-        add_creao = bool(_TOOL_INTENT_RE.search(clean)) and "creao" in reply.lower()
+        # Contextual links, appended in code (never from the LLM), shown as a masked embed:
+        #   - CREAO link only on a real tool question
+        #   - CREAO agent link / AI income link only on agent or earning questions
+        extras = []
+        if bool(_TOOL_INTENT_RE.search(clean)) and "creao" in reply.lower():
+            extras.append(f"try it here: {recommendations.CREAO_MD}")
+        ctx = recommendations.contextual_extra(clean)
+        if ctx:
+            extras.append(ctx)
         try:
             await message.reply(reply, mention_author=False)
             _channel_cooldowns[message.channel.id] = time.time()
-            if add_creao:
-                await message.channel.send(embed=recommendations.embed(f"try it here: {recommendations.CREAO_MD}"))
+            if extras:
+                await message.channel.send(embed=recommendations.embed("\n\n".join(extras)))
         except: pass
 
 

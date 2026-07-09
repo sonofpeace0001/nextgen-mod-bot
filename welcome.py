@@ -5,11 +5,17 @@ import discord, config, llm, database as db, leveling
 
 log = logging.getLogger("welcome")
 
+# The one site link. This is the ONLY url the welcome DM and the acknowledgement carry.
+SITE_LINK = "https://nextgenai-web.vercel.app/"
+
 WELCOME_DM = (
-    "hey, welcome to NEXTGEN.\n"
-    "quick one so i point you to the right place: with AI tools right now, are you a "
-    "total beginner, dabbled a bit, or pretty comfortable? just reply with one. "
-    "whatever you pick, you're in the right room. i read every reply."
+    "hey, welcome to NEXTGEN.\n\n"
+    "first step: sign up on our site and start learning how to actually use AI — "
+    f"{SITE_LINK}\n\n"
+    "fun fact: that whole website was built with AI. by the time you're a few "
+    "weeks in here, you'll know how to do that too.\n\n"
+    "quick one so i point you to the right place: with AI right now, are you a "
+    "total beginner, dabbled a bit, or pretty comfortable? just reply with one."
 )
 
 CHANNEL_GUIDE = """Server channel overview:
@@ -59,8 +65,10 @@ async def handle_welcome_reply(bot, message) -> bool:
             pass  # ban lookup failed; proceed as a welcome reply
 
     # Set their starting level from the answer (beginner/dabbled/comfortable).
+    level = leveling.DEFAULT_LEVEL
     try:
-        leveling.set_level(message.author.id, leveling.level_from_answer(message.content))
+        level = leveling.level_from_answer(message.content)
+        leveling.set_level(message.author.id, level)
     except Exception as e:
         log.error(f"Failed to set level from welcome reply: {e}")
 
@@ -85,8 +93,9 @@ async def handle_welcome_reply(bot, message) -> bool:
     db.clear_awaiting_reply(message.author.id)
     try:
         await message.reply(
-            "got it, thanks for that. you're in the right place. "
-            "i'll point you to good next steps, and you can always ask me where to start."
+            f"perfect — starting from {level} is exactly what this place is for. "
+            f"if you haven't yet, sign up here and pick your track: {SITE_LINK} — "
+            "then come say what you want to make first."
         )
     except Exception:
         pass
