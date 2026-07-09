@@ -60,7 +60,12 @@ async def maybe_handle(bot, message) -> bool:
     )
 
     # Guidance as plain text; the CREAO rec rides along in an embed so the link shows as "CREAO AI".
-    rec_embed = recommendations.embed(recommendations.recommend(category))
+    # Contextual links (agent / income) are appended in code only when the member asked about them.
+    rec_text = recommendations.recommend(category)
+    ctx = recommendations.contextual_extra(text)
+    if ctx:
+        rec_text += "\n\n" + ctx
+    rec_embed = recommendations.embed(rec_text)
     try:
         await message.reply(content=guidance, embed=rec_embed, mention_author=False)
     except Exception as e:
