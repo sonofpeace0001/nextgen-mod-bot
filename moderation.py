@@ -180,17 +180,21 @@ async def _handle_violation(bot, message, result):
     await _post_log(bot, g, f"WARN ({cat.upper()})", m, reason, total)
 
 
-async def _timeout(bot, guild, member, reason):
+async def _timeout(bot, guild, member, reason) -> bool:
+    """Returns True if the member ended up timed out or role-muted, False if both failed
+    (e.g. missing permissions and no Muted role configured)."""
     duration = datetime.timedelta(minutes=config.TIMEOUT_DURATION_MIN)
+    muted = False
     try:
         await member.timeout(duration, reason=reason)
         log.info(f"Timed out {member} for {config.TIMEOUT_DURATION_MIN}m: {reason}")
+        muted = True
     except discord.Forbidden:
         log.warning(f"Cannot timeout {member}, missing permissions or higher role")
-        await _role_mute(guild, member, reason)
+        muted = await _role_mute(guild, member, reason)
     except Exception as e:
         log.error(f"Timeout error for {member}: {e}")
-        await _role_mute(guild, member, reason)
+        muted = await _role_mute(guild, member, reason)
     try:
         t = await llm.generate(
             f"Tell this member they have been timed out for {config.TIMEOUT_DURATION_MIN} minutes. "
@@ -200,15 +204,19 @@ async def _timeout(bot, guild, member, reason):
     except: pass
     db.log_action(guild.id, f"TIMEOUT ({config.TIMEOUT_DURATION_MIN}m)", member.id, "AutoMod", reason)
     await _post_log(bot, guild, "TIMEOUT", member, reason)
+    return muted
 
 
-async def _role_mute(guild, member, reason):
+async def _role_mute(guild, member, reason) -> bool:
     role = guild.get_role(config.MUTED_ROLE_ID) or discord.utils.get(guild.roles, name="Muted")
     if role:
         try:
             await member.add_roles(role, reason=reason)
             asyncio.create_task(_auto_unmute(member, role, config.MUTE_DURATION_MIN))
-        except: pass
+            return True
+        except Exception:
+            return False
+    return False
 
 
 async def _escalate(bot, guild, member, reason, warning_count=0):
@@ -228,12 +236,14 @@ async def _escalate(bot, guild, member, reason, warning_count=0):
     except: pass
 
 
-async def _mute(bot, guild, member, reason):
-    await _timeout(bot, guild, member, reason)
+async def _mute(bot, guild, member, reason) -> bool:
+    return await _timeout(bot, guild, member, reason)
 
 
-async def _ban(bot, guild, member, reason):
-    """Manual ban (used by the report 'Ban' button). DM first, ban, log."""
+async def _ban(bot, guild, member, reason) -> bool:
+    """Manual ban (used by the report 'Ban' button). DM first, ban, log.
+    Returns True only if the ban actually went through, so callers can tell staff
+    the truth instead of claiming success on a failed/insufficient-permission ban."""
     try:
         t = await llm.generate(
             f"Tell this member they have been banned from NEXTGEN. Reason: {reason}. "
@@ -247,10 +257,13 @@ async def _ban(bot, guild, member, reason):
         log.info(f"BANNED {member}: {reason}")
     except discord.Forbidden:
         log.warning(f"Cannot ban {member}: missing permissions or higher role")
+        return False
     except Exception as e:
         log.error(f"Ban error for {member}: {e}")
+        return False
     db.log_action(guild.id, "BAN", member.id, "Moderator", reason)
     await _post_log(bot, guild, "BAN", member, reason)
+    return True
 
 
 async def _auto_unmute(member, role, minutes):

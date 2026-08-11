@@ -17,9 +17,12 @@ DEFAULT_LEVEL = "novice"
 # Welcome-DM answer -> starting tier (Task 1 -> Task 5 mapping).
 #   total beginner -> novice, dabbled a bit -> beginner, pretty comfortable -> intermediate
 ANSWER_TO_LEVEL = [
-    (("comfortable", "pretty", "confident", "experienced", "advanced"), "intermediate"),
-    (("dabble", "dabbled", "a bit", "some", "little"),                  "beginner"),
-    (("beginner", "total", "new", "none", "never", "nothing", "zero"),  "novice"),
+    # Checked in this order so a specific self-declared word always wins. "pretty" is
+    # deliberately excluded as a standalone needle: it's a common filler word (e.g.
+    # "pretty sure I'm a beginner") and was matching almost any reply as "intermediate".
+    (("beginner", "total", "new", "none", "never", "nothing", "zero"),         "novice"),
+    (("dabble", "dabbled", "a bit", "some", "little"),                        "beginner"),
+    (("comfortable", "confident", "experienced", "advanced", "pretty good"),  "intermediate"),
 ]
 
 

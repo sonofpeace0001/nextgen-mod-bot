@@ -42,6 +42,19 @@ _SESSION_TTL = 1800  # 30 minutes
 _sessions: dict = {}        # (channel_id, user_id) -> {stage, category, request, ts}
 _last_category: dict = {}   # (channel_id, user_id) -> (category, ts)
 
+# How often (in new-session events) to sweep expired entries. An abandoned session
+# (member never answers) would otherwise sit in memory forever on a long-running bot.
+_PRUNE_EVERY = 25
+_since_prune = 0
+
+
+def _prune_expired():
+    now = _now()
+    for d in (_sessions, _last_category):
+        stale = [k for k, v in d.items() if now - (v["ts"] if isinstance(v, dict) else v[1]) > _SESSION_TTL]
+        for k in stale:
+            d.pop(k, None)
+
 
 def _now() -> float:
     return time.time()
@@ -73,7 +86,12 @@ def has_active_session(channel_id, user_id) -> bool:
 
 
 def _set_session(key, stage, category, request):
+    global _since_prune
     _sessions[key] = {"stage": stage, "category": category, "request": request, "ts": _now()}
+    _since_prune += 1
+    if _since_prune >= _PRUNE_EVERY:
+        _since_prune = 0
+        _prune_expired()
 
 
 def _set_last(key, category):
