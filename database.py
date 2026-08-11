@@ -62,6 +62,10 @@ def init_db():
     CREATE TABLE IF NOT EXISTS kv_store (
         key TEXT PRIMARY KEY, value TEXT
     );
+    CREATE TABLE IF NOT EXISTS last_activity (
+        user_id INTEGER, guild_id INTEGER, last_seen TEXT,
+        PRIMARY KEY (user_id, guild_id)
+    );
     """)
     c.commit()
     # Load ignored channels from DB into config at startup
@@ -212,3 +216,24 @@ def kv_set(key, value):
     c = _conn()
     c.execute("INSERT OR REPLACE INTO kv_store (key, value) VALUES (?,?)", (key, str(value)))
     c.commit()
+
+# ── Member activity (retention / auto-kick) ───────────────────────
+
+def touch_activity(gid, uid):
+    """Record 'seen right now' for this member in this guild."""
+    c = _conn()
+    c.execute(
+        "INSERT INTO last_activity (user_id, guild_id, last_seen) VALUES (?,?,datetime('now')) "
+        "ON CONFLICT(user_id, guild_id) DO UPDATE SET last_seen=excluded.last_seen",
+        (uid, gid),
+    )
+    c.commit()
+
+def get_all_activity(gid):
+    """{user_id: last_seen_str} for every tracked member in this guild, in one query."""
+    return {r[0]: r[1] for r in _conn().execute(
+        "SELECT user_id, last_seen FROM last_activity WHERE guild_id=?", (gid,)
+    ).fetchall()}
+
+def remove_activity(gid, uid):
+    c = _conn(); c.execute("DELETE FROM last_activity WHERE guild_id=? AND user_id=?", (gid, uid)); c.commit()
