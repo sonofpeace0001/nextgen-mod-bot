@@ -12,12 +12,15 @@ class ReportView(discord.ui.View):
         report = db.get_report(self.report_id)
         if not report: await interaction.response.send_message("Not found.", ephemeral=True); return
         guild = interaction.guild; member = guild.get_member(report["target_id"])
-        if member:
-            total = db.add_warning(guild.id, member.id, str(interaction.user), report["reason"])
-            db.log_action(guild.id, "WARN(report)", member.id, str(interaction.user), report["reason"])
-            t = await llm.generate(f"Warn: {report['reason']}. Warning {total}. Calm.")
-            try: await member.send(t)
-            except: pass
+        if not member:
+            await interaction.response.send_message(
+                "That member is no longer in the server, so there's nothing to warn.", ephemeral=True)
+            return
+        total = db.add_warning(guild.id, member.id, str(interaction.user), report["reason"])
+        db.log_action(guild.id, "WARN(report)", member.id, str(interaction.user), report["reason"])
+        t = await llm.generate(f"Warn: {report['reason']}. Warning {total}. Calm.")
+        try: await member.send(t)
+        except: pass
         db.update_report_status(self.report_id, "warned")
         e = interaction.message.embeds[0] if interaction.message.embeds else discord.Embed()
         e.color = discord.Color.yellow(); e.set_footer(text=f"Warned by {interaction.user}")
@@ -27,7 +30,15 @@ class ReportView(discord.ui.View):
         report = db.get_report(self.report_id)
         if not report: await interaction.response.send_message("Not found.", ephemeral=True); return
         guild = interaction.guild; member = guild.get_member(report["target_id"])
-        if member: await moderation._mute(interaction.client, guild, member, report["reason"])
+        if not member:
+            await interaction.response.send_message(
+                "That member is no longer in the server, so there's nothing to mute.", ephemeral=True)
+            return
+        ok = await moderation._mute(interaction.client, guild, member, report["reason"])
+        if not ok:
+            await interaction.response.send_message(
+                f"Couldn't mute {member}: missing permissions and no Muted role configured.", ephemeral=True)
+            return
         db.update_report_status(self.report_id, "muted")
         e = interaction.message.embeds[0] if interaction.message.embeds else discord.Embed()
         e.color = discord.Color.orange(); e.set_footer(text=f"Muted by {interaction.user}")
@@ -37,7 +48,15 @@ class ReportView(discord.ui.View):
         report = db.get_report(self.report_id)
         if not report: await interaction.response.send_message("Not found.", ephemeral=True); return
         guild = interaction.guild; member = guild.get_member(report["target_id"])
-        if member: await moderation._ban(interaction.client, guild, member, report["reason"])
+        if not member:
+            await interaction.response.send_message(
+                "That member is no longer in the server, so there's nothing to ban.", ephemeral=True)
+            return
+        ok = await moderation._ban(interaction.client, guild, member, report["reason"])
+        if not ok:
+            await interaction.response.send_message(
+                f"Couldn't ban {member}: missing permissions or a role higher than mine.", ephemeral=True)
+            return
         db.update_report_status(self.report_id, "banned")
         e = interaction.message.embeds[0] if interaction.message.embeds else discord.Embed()
         e.color = discord.Color.red(); e.set_footer(text=f"Banned by {interaction.user}")

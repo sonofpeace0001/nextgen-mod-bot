@@ -42,8 +42,14 @@ STAFF_CHANNEL_ID = int(os.getenv("STAFF_CHANNEL_ID", "0"))
 
 # Daily prompt scheduler (Task 2): public channel + fixed local time.
 PROMPT_CHANNEL_ID = int(os.getenv("PROMPT_CHANNEL_ID", "0"))
-PROMPT_HOUR       = int(os.getenv("PROMPT_HOUR", "19"))
-PROMPT_TZ         = os.getenv("PROMPT_TZ", "Africa/Lagos")
+# Clamped to a valid hour: prompts.py builds a datetime.time(hour=PROMPT_HOUR) at import
+# time, so an out-of-range value here would crash the ENTIRE bot on startup, not just
+# the scheduler. min(23, max(0, ...)) keeps a bad env var from taking the whole bot down.
+try:
+    PROMPT_HOUR = min(23, max(0, int(os.getenv("PROMPT_HOUR", "19"))))
+except ValueError:
+    PROMPT_HOUR = 19
+PROMPT_TZ = os.getenv("PROMPT_TZ", "Africa/Lagos")
 
 # When true, the bot does NOT auto-reply in ticket channels (light moderation still runs).
 DISABLE_TICKET_REPLIES = os.getenv("DISABLE_TICKET_REPLIES", "true").lower() == "true"
