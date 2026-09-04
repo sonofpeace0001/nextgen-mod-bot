@@ -6,8 +6,13 @@ from openai import AsyncOpenAI
 log = logging.getLogger("llm")
 
 _GROQ_KEY = os.getenv("GROQ_API_KEY", "")
-_MODEL_NAME = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
-_FALLBACK_MODEL = "llama-3.1-8b-instant"
+# llama-3.3-70b-versatile and llama-3.1-8b-instant were both deprecated by Groq
+# (removed from the API entirely) -- every call silently failed for over a week before
+# this was caught. Moved to Groq's current production models, and _call() below now
+# also falls back to the secondary model on a "model not found" style error, not just
+# rate limits, so a future deprecation degrades instead of going fully dark again.
+_MODEL_NAME = os.getenv("LLM_MODEL", "openai/gpt-oss-120b")
+_FALLBACK_MODEL = "openai/gpt-oss-20b"
 _client = None
 
 _last_rate_limit = 0
@@ -226,6 +231,7 @@ async def _call(messages, max_tokens=300, temperature=0.7, model=None):
         await asyncio.sleep(_RATE_LIMIT_COOLDOWN - elapsed)
 
     use_model = model or _MODEL_NAME
+    tried_fallback = False
     for attempt in range(3):
         try:
             resp = await client.chat.completions.create(
@@ -237,12 +243,19 @@ async def _call(messages, max_tokens=300, temperature=0.7, model=None):
             return resp.choices[0].message.content.strip()
         except Exception as e:
             err = str(e).lower()
-            if "rate_limit" in err or "429" in err:
+            is_rate_limit = "rate_limit" in err or "429" in err
+            if is_rate_limit:
                 _last_rate_limit = time.time()
-                if use_model != _FALLBACK_MODEL:
-                    log.warning(f"Rate limited on {use_model}, trying {_FALLBACK_MODEL}")
-                    use_model = _FALLBACK_MODEL
-                    continue
+            # Try the secondary model once on ANY failure, not just rate limits -- a
+            # deprecated/retired/misconfigured primary model (a 404 "model not found",
+            # for instance) should never mean total silence when the fallback might
+            # still work. This is the gap that let a week-long outage go unnoticed.
+            if not tried_fallback and use_model != _FALLBACK_MODEL:
+                log.warning(f"Groq error on {use_model} ({e}); trying fallback {_FALLBACK_MODEL}")
+                use_model = _FALLBACK_MODEL
+                tried_fallback = True
+                continue
+            if is_rate_limit:
                 wait = min(5 * (attempt + 1), 15)
                 log.warning(f"Rate limited, waiting {wait}s (attempt {attempt + 1}/3)")
                 await asyncio.sleep(wait)

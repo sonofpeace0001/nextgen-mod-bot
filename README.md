@@ -1,6 +1,6 @@
 # NEXTGEN MOD - Discord Moderation Agent
 
-Autonomous Discord moderation bot with AI-powered chat (Groq/Llama 3.3 70B), auto-mod, ban appeals, reaction roles, and full slash command suite. NEXTGEN is an AI-only learning community that takes total beginners to their first real wins with AI and guides them upward over time.
+Autonomous Discord moderation bot with AI-powered chat (Groq/GPT-OSS 120B), auto-mod, ban appeals, reaction roles, and full slash command suite. NEXTGEN is an AI-only learning community that takes total beginners to their first real wins with AI and guides them upward over time.
 
 ## Features
 - Conversational chat (responds when @mentioned, picks up unanswered messages after 30s)
@@ -40,7 +40,7 @@ Retention (auto-kick) needs the bot's server role to have the **Kick Members** p
 ## Get a Free Groq API Key
 1. Go to console.groq.com and sign up (free, no credit card)
 2. Create an API key from the sidebar
-3. Uses Llama 3.3 70B Versatile by default (configurable via LLM_MODEL env var)
+3. Uses GPT-OSS 120B by default (configurable via LLM_MODEL env var). Groq periodically deprecates older models (this bot's original default, Llama 3.3 70B, was pulled from the API entirely) -- if chat replies ever go back to just saying "briefly unavailable", check [console.groq.com/docs/deprecations](https://console.groq.com/docs/deprecations) and update LLM_MODEL.
 
 ## Environment Variables
 | Variable | Required | Default |
@@ -69,7 +69,7 @@ Retention (auto-kick) needs the bot's server role to have the **Kick Members** p
 | SOCIAL_REMINDER_HOUR | No | 12 |
 | SOCIAL_LINKS | No | https://x.com/G_NEXTGEN |
 | CH_HELP | No | 0 |
-| LLM_MODEL | No | llama-3.3-70b-versatile |
+| LLM_MODEL | No | openai/gpt-oss-120b |
 | CHAT_ENABLED | No | true |
 | CHAT_REPLY_DELAY | No | 30 |
 | WARN_BEFORE_MUTE | No | 5 |
