@@ -57,6 +57,40 @@ DISABLE_TICKET_REPLIES = os.getenv("DISABLE_TICKET_REPLIES", "true").lower() == 
 # CREAO is the first-recommended platform everywhere. Link is fixed and enforced in code.
 CREAO_LINK = os.getenv("CREAO_LINK", "https://creao.ai/@Sonofpeace")
 
+# NEXTGEN Academy website: the structured course now lives here, not in the bot.
+ACADEMY_LINK = os.getenv("ACADEMY_LINK", "https://nextgenai-web.vercel.app/")
+
+# Retention: each non-immune, non-founder member must send AUTO_KICK_REQUIRED_MESSAGES
+# messages within a rolling AUTO_KICK_INACTIVE_DAYS-day cycle, or they're kicked when that
+# cycle ends. New members and existing members get a full grace period before this can
+# ever apply to them (see retention.py).
+AUTO_KICK_ENABLED            = os.getenv("AUTO_KICK_ENABLED", "true").lower() == "true"
+AUTO_KICK_INACTIVE_DAYS      = int(os.getenv("AUTO_KICK_INACTIVE_DAYS", "14"))
+AUTO_KICK_REQUIRED_MESSAGES  = int(os.getenv("AUTO_KICK_REQUIRED_MESSAGES", "10"))
+# Same crash risk as PROMPT_HOUR above: clamp so a bad env var can't take the whole bot down.
+try:
+    RETENTION_CHECK_HOUR = min(23, max(0, int(os.getenv("RETENTION_CHECK_HOUR", "3"))))
+except ValueError:
+    RETENTION_CHECK_HOUR = 3
+
+# Inactivity WARNING (before the kick): once a member is AUTO_KICK_WARNING_DAYS into their
+# cycle and still short of AUTO_KICK_REQUIRED_MESSAGES, they get pinged (once per cycle) in
+# RETENTION_WARNING_CHANNEL_ID showing their progress and the consequence. Immune roles/
+# founder/bots exempt, same as the kick itself. Leave RETENTION_WARNING_CHANNEL_ID unset to
+# disable just the warning ping (the kick itself still runs).
+RETENTION_WARNING_CHANNEL_ID = int(os.getenv("RETENTION_WARNING_CHANNEL_ID", "1536365838276235306"))
+AUTO_KICK_WARNING_DAYS = int(os.getenv("AUTO_KICK_WARNING_DAYS", "7"))
+
+# Daily social-media reminder: public channel + fixed local time (reuses PROMPT_TZ).
+# Channel defaults to PROMPT_CHANNEL_ID if not set separately.
+SOCIAL_REMINDER_ENABLED = os.getenv("SOCIAL_REMINDER_ENABLED", "true").lower() == "true"
+SOCIAL_REMINDER_CHANNEL_ID = int(os.getenv("SOCIAL_REMINDER_CHANNEL_ID", "0")) or PROMPT_CHANNEL_ID
+try:
+    SOCIAL_REMINDER_HOUR = min(23, max(0, int(os.getenv("SOCIAL_REMINDER_HOUR", "12"))))
+except ValueError:
+    SOCIAL_REMINDER_HOUR = 12
+SOCIAL_LINKS = os.getenv("SOCIAL_LINKS", "https://x.com/G_NEXTGEN")
+
 # Ticket channel detection
 TICKET_KEYWORDS        = os.getenv("TICKET_KEYWORDS", "ticket,support,help-desk").split(",")
 

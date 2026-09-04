@@ -4,7 +4,7 @@ import asyncio, logging, traceback, sys, re
 import discord
 from discord.ext import commands
 import config, database as db, moderation, welcome, appeals, reports, roles, chat, tickets
-import tutor, prompthelper, prompts
+import tutor, prompthelper, prompts, retention, social
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", stream=sys.stdout)
 log = logging.getLogger("mod-agent")
@@ -51,6 +51,8 @@ class ModerationBot(commands.Bot):
             me = g.me
             log.info(f"Guild '{g.name}': administrator={me.guild_permissions.administrator}")
         prompts.start(self)  # daily prompt scheduler (no-op if PROMPT_CHANNEL_ID unset)
+        social.start(self)   # daily social-media reminder (no-op if unset)
+        await retention.seed_and_start(self)  # auto-kick scheduler (seeds activity first)
 
     async def on_message(self, message):
         log.info(f"MSG: #{getattr(message.channel,'name','DM')} | {message.author} | {message.content[:100]!r}")
@@ -65,6 +67,12 @@ class ModerationBot(commands.Bot):
                 return
             await appeals.handle_dm(self, message)
             return
+
+        # 2b. Activity tracking for the retention/auto-kick check (any channel counts).
+        try:
+            db.record_message(message.guild.id, message.author.id)
+        except Exception as e:
+            log.error(f"activity tracking failed: {e}")
 
         # 3. FOUNDER COMMANDS: always process first, even in ignored channels
         if moderation._is_founder(message.author):
@@ -166,6 +174,12 @@ class ModerationBot(commands.Bot):
     async def on_member_join(self, member):
         log.info(f"MEMBER JOIN: {member} ({member.id})")
         await roles.assign_default_role(self, member)
+        # Give them a fresh, empty activity cycle so the retention/auto-kick check never
+        # counts anything from before they even joined.
+        try:
+            db.seed_cycle(member.guild.id, member.id)
+        except Exception as e:
+            log.error(f"activity seed on join failed: {e}")
         # Welcome DM with one onboarding question; fall back to public greet if DMs are closed.
         sent = await welcome.send_welcome_dm(self, member)
         if not sent:

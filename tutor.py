@@ -1,8 +1,11 @@
-"""Tutor: novice -> grandmaster guidance (Task 5).
+"""Tutor entry point.
 
-Backed by curriculum.py for content and leveling.py for tiers. When a member asks to
-learn / "where do i start" / "what next", give step-by-step guidance scaled to their
-stored level, one concrete next action, and the relevant tool rec (CREAO first).
+The structured, lesson-by-lesson course (NEXTGEN Academy) now lives on the website
+(config.ACADEMY_LINK), not in the bot -- see the retirement note in curriculum.py. When
+a member asks to learn / "where do i start" / "what next", point them at the Academy
+site, remind them the prompt-helper is available in here, and still surface a tool
+recommendation (CREAO first, or the agent/income links) if their message actually calls
+for one.
 
 Only fires when the bot is @mentioned or the message is in the help channel (the
 caller in bot.py enforces that). Returns True when it handled the message so the
@@ -10,7 +13,7 @@ caller skips chat.py's reply and avoids double-replying.
 """
 from __future__ import annotations
 import re, logging
-import config, llm, leveling, curriculum, recommendations
+import config, recommendations
 
 log = logging.getLogger("tutor")
 
@@ -34,40 +37,27 @@ def wants_tutor(text: str) -> bool:
     return bool(_LEARN_RE.search(text or ""))
 
 
+GUIDANCE = (
+    f"the actual course lives on NEXTGEN Academy now, sign up and follow the track there: "
+    f"{config.ACADEMY_LINK}\n\n"
+    "in here i can help draft a ready-to-paste prompt for whatever you're building, or "
+    "point you to the right tool. what are you trying to make?"
+)
+
+
 async def maybe_handle(bot, message) -> bool:
     text = _strip_mention(bot, message)
     if not wants_tutor(text):
         return False
 
-    uid = message.author.id
-    level = leveling.get_level(uid)
-    action = curriculum.first_action(level)
-    nxt = curriculum.next_tier(level)
-    category = curriculum.detect_category(action)
-
-    context = (
-        f"This member's current level is '{level}'.\n"
-        f"Their one concrete next action is: {action}.\n"
-        + (f"After this tier comes '{nxt}'.\n" if nxt else "They are at the top tier.\n")
-        + f"They said: {text}"
-    )
-    guidance = await llm.coach(
-        "Give this member friendly, step-by-step guidance for their level. Point them at "
-        "their one concrete next action and encourage them to get that small win first. "
-        "Keep it short. Do not write any tool links yourself.",
-        context=context,
-        max_tokens=260,
-    )
-
-    # Guidance as plain text; the CREAO rec rides along in an embed so the link shows as "CREAO AI".
-    # Contextual links (agent / income) are appended in code only when the member asked about them.
-    rec_text = recommendations.recommend(category)
+    # Only show a tool recommendation if the message actually called for one (agent/
+    # automation/earning questions); no default CREAO push here, this is a redirect.
     ctx = recommendations.contextual_extra(text)
-    if ctx:
-        rec_text += "\n\n" + ctx
-    rec_embed = recommendations.embed(rec_text)
     try:
-        await message.reply(content=guidance, embed=rec_embed, mention_author=False)
+        if ctx:
+            await message.reply(content=GUIDANCE, embed=recommendations.embed(ctx), mention_author=False)
+        else:
+            await message.reply(content=GUIDANCE, mention_author=False)
     except Exception as e:
         log.error(f"tutor reply failed: {e}")
     return True

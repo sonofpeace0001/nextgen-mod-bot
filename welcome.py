@@ -6,7 +6,7 @@ import discord, config, llm, database as db, leveling
 log = logging.getLogger("welcome")
 
 # The one site link. This is the ONLY url the welcome DM and the acknowledgement carry.
-SITE_LINK = "https://nextgenai-web.vercel.app/"
+SITE_LINK = config.ACADEMY_LINK
 
 WELCOME_DM = (
     "hey, welcome to NEXTGEN.\n\n"

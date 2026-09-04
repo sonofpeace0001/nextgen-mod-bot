@@ -1,47 +1,20 @@
-"""Curriculum content (Task 5) -- data only, easy to edit.
+"""Curriculum data -- data only, easy to edit.
 
-Two things live here:
-  1. TIER_SKILLS: per-tier ordered milestones the tutor walks members through.
+The structured, lesson-by-lesson course (NEXTGEN Academy) now lives on the website
+(config.ACADEMY_LINK), not in the bot -- see tutor.py, which just points members there.
+What's left here is data unrelated to that in-bot curriculum:
+  1. TIERS: tier NAMES only, used to store a member's self-reported level from the
+     welcome DM (beginner/dabbled/comfortable -> novice/beginner/intermediate). No
+     lesson content lives in the bot.
   2. CATEGORY_KEYWORDS / category helpers: how the prompt-helper (Task 4) maps a
-     member's "i want to make X" message to an output category.
-
-No bot logic here on purpose. tutor.py reads this for content, leveling.py owns the
-stored level, prompthelper.py reads the category map.
+     member's "i want to make X" message to an output category. Unrelated to the
+     Academy retirement above.
 """
 from __future__ import annotations
 
-# Ordered tiers, novice -> grandmaster.
+# Ordered tiers, novice -> grandmaster. Names only; leveling.py stores/validates against
+# this list. No per-tier lesson content is kept in the bot anymore.
 TIERS = ["novice", "beginner", "intermediate", "advanced", "grandmaster"]
-
-# Per tier: a short ordered list of concrete skills / milestones.
-# Plain language, one small win before theory.
-TIER_SKILLS = {
-    "novice": [
-        "make your first AI graphic, even a rough one",
-        "write your first useful prompt and tweak it once",
-        "try one AI chat tool and ask it something real",
-    ],
-    "beginner": [
-        "make a clean graphic you'd actually post",
-        "write a prompt that gets a good result on the first or second try",
-        "use AI to speed up one task you already do",
-    ],
-    "intermediate": [
-        "build a simple landing page with AI",
-        "make a short AI video or animation",
-        "turn one idea into a finished, shareable piece",
-    ],
-    "advanced": [
-        "ship a small AI-built tool or site that a real person uses",
-        "combine two or more AI tools to finish one project",
-        "help someone else make their first AI thing",
-    ],
-    "grandmaster": [
-        "chain agents or automations to run a task without you",
-        "ship an AI-built product end to end",
-        "teach a repeatable workflow others can follow",
-    ],
-}
 
 
 def tier_index(level: str) -> int:
@@ -54,16 +27,6 @@ def tier_index(level: str) -> int:
 def next_tier(level: str) -> str | None:
     i = tier_index(level)
     return TIERS[i + 1] if i + 1 < len(TIERS) else None
-
-
-def first_action(level: str) -> str:
-    """The first concrete next action for someone at this tier."""
-    skills = TIER_SKILLS.get((level or "novice").lower(), TIER_SKILLS["novice"])
-    return skills[0]
-
-
-def skills_for(level: str) -> list[str]:
-    return TIER_SKILLS.get((level or "novice").lower(), TIER_SKILLS["novice"])
 
 
 # ── Prompt-helper categories (Task 4) ─────────────────────────────
