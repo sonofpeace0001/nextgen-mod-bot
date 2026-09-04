@@ -6,6 +6,14 @@ redeploy. Moved to a dedicated Postgres schema (mod_bot) in the same Supabase pr
 as the NEXTGEN Academy website, under a role scoped ONLY to that schema (no access to
 the website's public-schema data).
 
+Connects via Supabase's Supavisor pooler in session mode, NOT the direct db.<ref>.
+supabase.co endpoint: the direct endpoint is IPv6-only, and Railway has no IPv6
+egress, so it fails with "Network is unreachable" every time. The pooler host/user
+format also matters: it must be a region+shard host (e.g. aws-1-eu-central-1, not
+aws-0- or the bare region -- Supabase assigns each project to a specific shard) and
+the username must carry the project ref suffix (role.project-ref) for Supavisor's
+tenant lookup, or it fails with "tenant/user not found" even with a correct password.
+
 Uses one long-lived, auto-reconnecting psycopg2 connection with the exact same
 synchronous call pattern the old sqlite3 code used, so no other module needed to
 change how it calls this one. Every function signature and return shape below is
@@ -16,10 +24,10 @@ import psycopg2
 import psycopg2.extras
 
 _DSN = dict(
-    host=os.getenv("SUPABASE_DB_HOST", "db.hvwuozfsdckopxlbailm.supabase.co"),
+    host=os.getenv("SUPABASE_DB_HOST", "aws-1-eu-central-1.pooler.supabase.com"),
     port=int(os.getenv("SUPABASE_DB_PORT", "5432")),
     dbname=os.getenv("SUPABASE_DB_NAME", "postgres"),
-    user=os.getenv("SUPABASE_DB_USER", "mod_bot_service"),
+    user=os.getenv("SUPABASE_DB_USER", "mod_bot_service.hvwuozfsdckopxlbailm"),
     password=os.getenv("SUPABASE_DB_PASSWORD", ""),
     connect_timeout=10,
 )

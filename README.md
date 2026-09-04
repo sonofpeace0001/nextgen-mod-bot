@@ -48,6 +48,8 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA mod_bot GRANT ALL ON SEQUENCES TO mod_bot_ser
 ```
 Then point `SUPABASE_DB_*` (below) at that project and role. `database.py`'s `init_db()` creates the actual tables on first run (idempotent).
 
+**Use the Supavisor pooler (session mode, port 5432), not the direct `db.<ref>.supabase.co` host.** The direct host is IPv6-only, and Railway (and several other platforms) have no IPv6 egress — connecting to it fails with `Network is unreachable`. Get the exact pooler host for your project from the Supabase dashboard (**Connect** button > **Session pooler**): it's a region+shard-specific host like `aws-1-eu-central-1.pooler.supabase.com` (the shard number isn't always `0` — ask the dashboard, don't guess). `SUPABASE_DB_USER` must include the `.<project-ref>` suffix (e.g. `mod_bot_service.hvwuozfsdckopxlbailm`) or Supavisor rejects the connection with `tenant/user not found`, even with a correct password.
+
 ## Deploy on Railway
 1. Fork or connect this repo on railway.app
 2. Add variables: DISCORD_BOT_TOKEN, GROQ_API_KEY, GUILD_ID, LOG_CHANNEL_ID, WELCOME_CHANNEL_ID, and the `SUPABASE_DB_*` variables (see Database and Environment Variables below)
