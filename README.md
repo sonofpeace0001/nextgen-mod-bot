@@ -3,6 +3,7 @@
 Autonomous Discord moderation bot with AI-powered chat (Groq/GPT-OSS 120B), auto-mod, ban appeals, reaction roles, and full slash command suite. NEXTGEN is an AI-only learning community that takes total beginners to their first real wins with AI and guides them upward over time.
 
 ## Features
+- Persistent Postgres (Supabase) storage — survives redeploys and restarts (see Database below)
 - Conversational chat (responds when @mentioned, picks up unanswered messages after 30s)
 - Auto-moderation (spam, phishing, LLM-based violation detection)
 - Escalation: Warnings -> Mute -> Ban
@@ -31,9 +32,25 @@ The bot also uses the non-privileged `guilds`, `guild_messages`, `dm_messages` (
 
 Retention (auto-kick) needs the bot's server role to have the **Kick Members** permission. This is a normal guild permission granted when you invite the bot / assign its role — not a Developer Portal intent toggle.
 
+## Database
+Persistence is Postgres via Supabase, not a local file. **This matters on Railway: a local SQLite file lives on the container's disk, which Railway wipes on every deploy and restart** — warnings, mod logs, appeals, and retention progress would silently vanish every time the bot redeployed. Postgres survives that.
+
+Tables live in a dedicated `mod_bot` schema, isolated from any other app sharing the same Supabase project (this bot's `mod_bot_service` role has zero access outside that one schema — verified: it cannot even see other schemas' tables). To set up your own:
+```sql
+CREATE SCHEMA IF NOT EXISTS mod_bot;
+CREATE ROLE mod_bot_service WITH LOGIN PASSWORD '<strong-password>';
+ALTER ROLE mod_bot_service SET search_path TO mod_bot;
+GRANT USAGE, CREATE ON SCHEMA mod_bot TO mod_bot_service;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA mod_bot TO mod_bot_service;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA mod_bot TO mod_bot_service;
+ALTER DEFAULT PRIVILEGES IN SCHEMA mod_bot GRANT ALL ON TABLES TO mod_bot_service;
+ALTER DEFAULT PRIVILEGES IN SCHEMA mod_bot GRANT ALL ON SEQUENCES TO mod_bot_service;
+```
+Then point `SUPABASE_DB_*` (below) at that project and role. `database.py`'s `init_db()` creates the actual tables on first run (idempotent).
+
 ## Deploy on Railway
 1. Fork or connect this repo on railway.app
-2. Add variables: DISCORD_BOT_TOKEN, GROQ_API_KEY, GUILD_ID, LOG_CHANNEL_ID, WELCOME_CHANNEL_ID
+2. Add variables: DISCORD_BOT_TOKEN, GROQ_API_KEY, GUILD_ID, LOG_CHANNEL_ID, WELCOME_CHANNEL_ID, and the `SUPABASE_DB_*` variables (see Database and Environment Variables below)
 3. Set service type to **Worker** (not Web) in Settings
 4. Deploy. Done.
 
@@ -49,6 +66,11 @@ Retention (auto-kick) needs the bot's server role to have the **Kick Members** p
 | GROQ_API_KEY | Yes | - |
 | GUILD_ID | Yes | - |
 | LOG_CHANNEL_ID | Yes | - |
+| SUPABASE_DB_HOST | Yes | - |
+| SUPABASE_DB_PORT | No | 5432 |
+| SUPABASE_DB_NAME | No | postgres |
+| SUPABASE_DB_USER | No | mod_bot_service |
+| SUPABASE_DB_PASSWORD | Yes | - |
 | WELCOME_CHANNEL_ID | No | 0 |
 | STAFF_CHANNEL_ID | No | 0 |
 | PROMPT_CHANNEL_ID | No | 0 |
