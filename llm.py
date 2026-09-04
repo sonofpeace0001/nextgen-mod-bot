@@ -197,7 +197,9 @@ async def teach(message_text, channel_context="", recent_messages=None, max_toke
         content += f"Someone tagged you and said: {message_text}\n\nTeach and answer directly.\n"
     messages.append({"role": "user", "content": content})
     result = await _call(messages, max_tokens=max_tokens, temperature=0.7)
-    return result or ""
+    if result is None:
+        return "(Briefly unavailable, try again in a moment.)"
+    return result
 
 
 def _get_client():
@@ -278,7 +280,9 @@ async def chat_reply(message_text, channel_context="", recent_messages=None, max
         content += f"Someone said: {message_text}\n\nReply naturally. Short and human.\n"
     messages.append({"role": "user", "content": content})
     result = await _call(messages, max_tokens=max_tokens, temperature=0.85)
-    return result or ""
+    if result is None:
+        return "(Briefly unavailable, try again in a moment.)"
+    return result
 
 
 async def ticket_reply(message_text, ticket_history=None, max_tokens=400):
