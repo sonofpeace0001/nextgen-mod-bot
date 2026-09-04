@@ -70,7 +70,7 @@ class ModerationBot(commands.Bot):
 
         # 2b. Activity tracking for the retention/auto-kick check (any channel counts).
         try:
-            db.touch_activity(message.guild.id, message.author.id)
+            db.record_message(message.guild.id, message.author.id)
         except Exception as e:
             log.error(f"activity tracking failed: {e}")
 
@@ -174,10 +174,10 @@ class ModerationBot(commands.Bot):
     async def on_member_join(self, member):
         log.info(f"MEMBER JOIN: {member} ({member.id})")
         await roles.assign_default_role(self, member)
-        # Give them a fresh activity clock so the retention/auto-kick check never counts
-        # time before they even joined.
+        # Give them a fresh, empty activity cycle so the retention/auto-kick check never
+        # counts anything from before they even joined.
         try:
-            db.touch_activity(member.guild.id, member.id)
+            db.seed_cycle(member.guild.id, member.id)
         except Exception as e:
             log.error(f"activity seed on join failed: {e}")
         # Welcome DM with one onboarding question; fall back to public greet if DMs are closed.

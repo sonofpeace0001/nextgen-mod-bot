@@ -64,17 +64,20 @@ def init_db():
     );
     CREATE TABLE IF NOT EXISTS last_activity (
         user_id INTEGER, guild_id INTEGER, last_seen TEXT, warned_at TEXT,
+        cycle_start TEXT, msg_count INTEGER DEFAULT 0,
         PRIMARY KEY (user_id, guild_id)
     );
     """)
     c.commit()
-    # Migration: last_activity may already exist (pre-warning-feature deploys) without
-    # warned_at. CREATE TABLE IF NOT EXISTS above won't add columns to an existing table.
-    try:
-        c.execute("ALTER TABLE last_activity ADD COLUMN warned_at TEXT")
-        c.commit()
-    except sqlite3.OperationalError:
-        pass  # column already exists
+    # Migration: last_activity may already exist (from an earlier deploy of this feature)
+    # without one or more of these columns. CREATE TABLE IF NOT EXISTS above won't add
+    # columns to an already-existing table, so add each one, ignoring "already exists".
+    for _col, _decl in (("warned_at", "TEXT"), ("cycle_start", "TEXT"), ("msg_count", "INTEGER DEFAULT 0")):
+        try:
+            c.execute(f"ALTER TABLE last_activity ADD COLUMN {_col} {_decl}")
+            c.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
     # Load ignored channels from DB into config at startup
     _load_ignored_channels()
 
@@ -224,29 +227,60 @@ def kv_set(key, value):
     c.execute("INSERT OR REPLACE INTO kv_store (key, value) VALUES (?,?)", (key, str(value)))
     c.commit()
 
-# ── Member activity (retention / auto-kick) ───────────────────────
+# ── Member activity (retention / auto-kick) ────────────────────────
+# Each member accumulates a message count within a "cycle" (cycle_start -> +N days).
+# record_message() increments the count; it does NOT reset the cycle -- only the daily
+# retention check evaluates and resets/kicks once a cycle's days are up. seed_cycle()
+# starts a member's very first cycle at zero (new joins, and untracked-member seeding on
+# first deploy), without touching anyone who already has a row.
 
-def touch_activity(gid, uid):
-    """Record 'seen right now' for this member in this guild. Also clears any pending
-    inactivity warning, since they're active again -- the warning cycle resets."""
+def record_message(gid, uid):
+    """A qualifying message just happened: +1 to this member's current-cycle count.
+    Starts their first cycle (count=1) if they don't have one yet. If an existing row
+    somehow has no cycle_start (e.g. a row migrated from an older schema that seeding
+    hasn't backfilled yet), this also self-heals it to now -- never inherit a stale
+    cycle_start that could put a member instantly over the day threshold."""
     c = _conn()
     c.execute(
-        "INSERT INTO last_activity (user_id, guild_id, last_seen, warned_at) "
-        "VALUES (?,?,datetime('now'),NULL) "
-        "ON CONFLICT(user_id, guild_id) DO UPDATE SET last_seen=excluded.last_seen, warned_at=NULL",
+        "INSERT INTO last_activity (user_id, guild_id, last_seen, cycle_start, msg_count, warned_at) "
+        "VALUES (?,?,datetime('now'),datetime('now'),1,NULL) "
+        "ON CONFLICT(user_id, guild_id) DO UPDATE SET "
+        "last_seen=datetime('now'), msg_count=msg_count+1, "
+        "cycle_start=COALESCE(cycle_start, datetime('now'))",
         (uid, gid),
     )
     c.commit()
 
+def seed_cycle(gid, uid):
+    """Start a member's first cycle at zero messages. No-op if they already have a row,
+    so this never clobbers progress -- safe to call unconditionally on join or at startup."""
+    c = _conn()
+    c.execute(
+        "INSERT OR IGNORE INTO last_activity (user_id, guild_id, last_seen, cycle_start, msg_count, warned_at) "
+        "VALUES (?,?,datetime('now'),datetime('now'),0,NULL)",
+        (uid, gid),
+    )
+    c.commit()
+
+def reset_cycle(gid, uid):
+    """Member passed their cycle (hit the message quota in time): start a fresh one."""
+    c = _conn()
+    c.execute(
+        "UPDATE last_activity SET cycle_start=datetime('now'), msg_count=0, warned_at=NULL "
+        "WHERE guild_id=? AND user_id=?",
+        (gid, uid),
+    )
+    c.commit()
+
 def get_all_activity(gid):
-    """{user_id: (last_seen_str, warned_at_str)} for every tracked member, one query."""
-    return {r[0]: (r[1], r[2]) for r in _conn().execute(
-        "SELECT user_id, last_seen, warned_at FROM last_activity WHERE guild_id=?", (gid,)
+    """{user_id: (cycle_start_str, msg_count, warned_at_str)} for every tracked member."""
+    return {r[0]: (r[1], r[2], r[3]) for r in _conn().execute(
+        "SELECT user_id, cycle_start, msg_count, warned_at FROM last_activity WHERE guild_id=?", (gid,)
     ).fetchall()}
 
 def mark_warned(gid, uid):
     """Record that the inactivity warning was just sent, so it isn't repeated every day
-    until the member either becomes active again (touch_activity clears it) or is kicked."""
+    until the member's cycle resets (passed) or ends (kicked)."""
     c = _conn()
     c.execute(
         "UPDATE last_activity SET warned_at=datetime('now') WHERE guild_id=? AND user_id=?",

@@ -18,7 +18,7 @@ Autonomous Discord moderation bot with AI-powered chat (Groq/Llama 3.3 70B), aut
 - **Tutor**: the structured course now lives on the NEXTGEN Academy website (`ACADEMY_LINK`) instead of in the bot; "where do I start" style questions get pointed there, plus a tool rec if the message actually calls for one
 - **Prompt helper**: tag the bot for a prompt (graphic, tweet, thread, video, landing page, app, ...) and it acts like a senior prompt engineer — asks a few quick intake questions, then drafts a premium, ready-to-paste prompt; recommends CREAO first (try it first; alternatives only when you come back and ask)
 - **CREAO-first recommendations**: every tool rec starts with CREAO, then honest alternatives; agent/automation questions get the CREAO agent-builder link, earning/monetizing questions get the AI-income-use-cases link (both contextual only, never unprompted)
-- **Retention (warn + auto-kick)**: once a day, checks every member without an immune role. At `AUTO_KICK_WARNING_DAYS` inactive (default 7) they get pinged once in `RETENTION_WARNING_CHANNEL_ID` warning them of the consequence; at `AUTO_KICK_INACTIVE_DAYS` inactive (default 14) they're kicked. Founder and immune roles are always exempt. Sending a message resets both the warning and the clock. New members and everyone already in the server get a full grace period from the moment this feature deploys — nobody is warned or kicked for silence before the bot could track them. DMs the member before kicking (best effort), then kicks and logs.
+- **Retention (message quota + warn + auto-kick)**: every member without an immune role must send `AUTO_KICK_REQUIRED_MESSAGES` messages (default 10) within a rolling `AUTO_KICK_INACTIVE_DAYS`-day cycle (default 14). At the halfway point (`AUTO_KICK_WARNING_DAYS`, default 7) anyone still short of quota gets pinged once in `RETENTION_WARNING_CHANNEL_ID` showing their progress ("4/10 messages") and days left. When the cycle ends: quota met -> a fresh cycle starts; quota missed -> kicked. Founder and immune roles are always exempt. New members and everyone already in the server get a full grace period from the moment this feature deploys — nobody is judged on messages sent before the bot could count them. DMs the member before kicking (best effort), then kicks and logs.
 - **Daily social-media reminder**: one nudge per day in a public channel asking members if they've seen today's NEXTGEN post on socials
 - Channel silencing: never replies in announcements; ticket auto-replies are off by default (light moderation still runs)
 
@@ -60,8 +60,9 @@ Retention (auto-kick) needs the bot's server role to have the **Kick Members** p
 | ACADEMY_LINK | No | https://nextgenai-web.vercel.app/ |
 | AUTO_KICK_ENABLED | No | true |
 | AUTO_KICK_INACTIVE_DAYS | No | 14 |
+| AUTO_KICK_REQUIRED_MESSAGES | No | 10 |
 | AUTO_KICK_WARNING_DAYS | No | 7 |
-| RETENTION_WARNING_CHANNEL_ID | No | 0 (warning skipped if unset) |
+| RETENTION_WARNING_CHANNEL_ID | No | 1536365838276235306 |
 | RETENTION_CHECK_HOUR | No | 3 |
 | SOCIAL_REMINDER_ENABLED | No | true |
 | SOCIAL_REMINDER_CHANNEL_ID | No | 0 (falls back to PROMPT_CHANNEL_ID) |
