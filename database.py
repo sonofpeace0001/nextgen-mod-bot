@@ -6,6 +6,14 @@ redeploy. Moved to a dedicated Postgres schema (mod_bot) in the same Supabase pr
 as the NEXTGEN Academy website, under a role scoped ONLY to that schema (no access to
 the website's public-schema data).
 
+Connects via Supabase's Supavisor pooler in session mode, NOT the direct db.<ref>.
+supabase.co endpoint: the direct endpoint is IPv6-only, and Railway has no IPv6
+egress, so it fails with "Network is unreachable" every time. The pooler host/user
+format also matters: it must be a region+shard host (e.g. aws-1-eu-central-1, not
+aws-0- or the bare region -- Supabase assigns each project to a specific shard) and
+the username must carry the project ref suffix (role.project-ref) for Supavisor's
+tenant lookup, or it fails with "tenant/user not found" even with a correct password.
+
 Uses one long-lived, auto-reconnecting psycopg2 connection with the exact same
 synchronous call pattern the old sqlite3 code used, so no other module needed to
 change how it calls this one. Every function signature and return shape below is
@@ -16,10 +24,10 @@ import psycopg2
 import psycopg2.extras
 
 _DSN = dict(
-    host=os.getenv("SUPABASE_DB_HOST", "db.hvwuozfsdckopxlbailm.supabase.co"),
+    host=os.getenv("SUPABASE_DB_HOST", "aws-1-eu-central-1.pooler.supabase.com"),
     port=int(os.getenv("SUPABASE_DB_PORT", "5432")),
     dbname=os.getenv("SUPABASE_DB_NAME", "postgres"),
-    user=os.getenv("SUPABASE_DB_USER", "mod_bot_service"),
+    user=os.getenv("SUPABASE_DB_USER", "mod_bot_service.hvwuozfsdckopxlbailm"),
     password=os.getenv("SUPABASE_DB_PASSWORD", ""),
     connect_timeout=10,
 )
@@ -363,6 +371,40 @@ def seed_cycle(gid, uid):
         "ON CONFLICT (user_id, guild_id) DO NOTHING",
         (uid, gid), commit=True,
     )
+
+def seed_cycles_bulk(gid, uids):
+    """Same as seed_cycle, for many members in ONE round trip. Startup seeding used to
+    call seed_cycle once per member -- with a remote Postgres connection (unlike the old
+    local SQLite file) that meant one network round-trip per member, and on a server with
+    ~200 members this blocked the event loop long enough to nearly trip Discord's
+    heartbeat timeout. No-op for an empty list."""
+    global _conn_obj
+    uids = list(uids)
+    if not uids:
+        return
+    for attempt in range(2):
+        try:
+            if _conn_obj is None or _conn_obj.closed:
+                _conn_obj = psycopg2.connect(cursor_factory=psycopg2.extras.RealDictCursor, **_DSN)
+            cur = _conn_obj.cursor()
+            psycopg2.extras.execute_values(
+                cur,
+                "INSERT INTO mod_bot.last_activity (user_id, guild_id, last_seen, cycle_start, msg_count, warned_at) "
+                "VALUES %s ON CONFLICT (user_id, guild_id) DO NOTHING",
+                [(uid, gid, 0, None) for uid in uids],  # matches the 4 %s in template below
+                template=f"(%s,%s,{_NOW},{_NOW},%s,%s)",
+            )
+            _conn_obj.commit()
+            cur.close()
+            return
+        except (psycopg2.OperationalError, psycopg2.InterfaceError):
+            try:
+                if _conn_obj: _conn_obj.close()
+            except Exception:
+                pass
+            _conn_obj = None
+            if attempt == 1:
+                raise
 
 def reset_cycle(gid, uid):
     """Member passed their cycle (hit the message quota in time): start a fresh one."""

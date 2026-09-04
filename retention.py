@@ -70,17 +70,25 @@ async def seed_and_start(bot):
     for guild in bot.guilds:
         try:
             known = db.get_all_activity(guild.id)
-            seeded = 0
+            new_ids = []
+            needs_reset = []  # tracked, but no cycle_start (pre-quota-feature row) -- rare
             for member in guild.members:
                 if member.bot:
                     continue
                 row = known.get(member.id)
                 if row is None:
-                    db.seed_cycle(guild.id, member.id)
-                    seeded += 1
-                elif row[0] is None:  # tracked, but no cycle_start (pre-quota-feature row)
-                    db.reset_cycle(guild.id, member.id)
-                    seeded += 1
+                    new_ids.append(member.id)
+                elif row[0] is None:
+                    needs_reset.append(member.id)
+            # One round trip for the (usually much larger) new-member batch, instead of one
+            # network call per member -- with a remote Postgres connection, N sequential
+            # round trips on a server of any real size can block the event loop long enough
+            # to trip Discord's heartbeat timeout at startup.
+            if new_ids:
+                db.seed_cycles_bulk(guild.id, new_ids)
+            for uid in needs_reset:
+                db.reset_cycle(guild.id, uid)
+            seeded = len(new_ids) + len(needs_reset)
             if seeded:
                 log.info(f"Seeded a fresh cycle for {seeded} member(s) in '{guild.name}'.")
         except Exception as e:
