@@ -372,6 +372,40 @@ def seed_cycle(gid, uid):
         (uid, gid), commit=True,
     )
 
+def seed_cycles_bulk(gid, uids):
+    """Same as seed_cycle, for many members in ONE round trip. Startup seeding used to
+    call seed_cycle once per member -- with a remote Postgres connection (unlike the old
+    local SQLite file) that meant one network round-trip per member, and on a server with
+    ~200 members this blocked the event loop long enough to nearly trip Discord's
+    heartbeat timeout. No-op for an empty list."""
+    global _conn_obj
+    uids = list(uids)
+    if not uids:
+        return
+    for attempt in range(2):
+        try:
+            if _conn_obj is None or _conn_obj.closed:
+                _conn_obj = psycopg2.connect(cursor_factory=psycopg2.extras.RealDictCursor, **_DSN)
+            cur = _conn_obj.cursor()
+            psycopg2.extras.execute_values(
+                cur,
+                "INSERT INTO mod_bot.last_activity (user_id, guild_id, last_seen, cycle_start, msg_count, warned_at) "
+                "VALUES %s ON CONFLICT (user_id, guild_id) DO NOTHING",
+                [(uid, gid, 0, None) for uid in uids],  # matches the 4 %s in template below
+                template=f"(%s,%s,{_NOW},{_NOW},%s,%s)",
+            )
+            _conn_obj.commit()
+            cur.close()
+            return
+        except (psycopg2.OperationalError, psycopg2.InterfaceError):
+            try:
+                if _conn_obj: _conn_obj.close()
+            except Exception:
+                pass
+            _conn_obj = None
+            if attempt == 1:
+                raise
+
 def reset_cycle(gid, uid):
     """Member passed their cycle (hit the message quota in time): start a fresh one."""
     _run(
