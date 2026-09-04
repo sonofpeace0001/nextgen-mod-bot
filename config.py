@@ -64,12 +64,19 @@ ACADEMY_LINK = os.getenv("ACADEMY_LINK", "https://nextgenai-web.vercel.app/")
 # AUTO_KICK_INACTIVE_DAYS. New members and existing members get a full grace period
 # before this can ever apply to them (see retention.py).
 AUTO_KICK_ENABLED       = os.getenv("AUTO_KICK_ENABLED", "true").lower() == "true"
-AUTO_KICK_INACTIVE_DAYS = int(os.getenv("AUTO_KICK_INACTIVE_DAYS", "7"))
+AUTO_KICK_INACTIVE_DAYS = int(os.getenv("AUTO_KICK_INACTIVE_DAYS", "14"))
 # Same crash risk as PROMPT_HOUR above: clamp so a bad env var can't take the whole bot down.
 try:
     RETENTION_CHECK_HOUR = min(23, max(0, int(os.getenv("RETENTION_CHECK_HOUR", "3"))))
 except ValueError:
     RETENTION_CHECK_HOUR = 3
+
+# Inactivity WARNING (before the kick): once a member crosses AUTO_KICK_WARNING_DAYS days
+# inactive, they get pinged (once per inactivity cycle) in RETENTION_WARNING_CHANNEL_ID
+# telling them they'll be kicked if they stay quiet. Immune roles/founder/bots exempt, same
+# as the kick itself. Leave RETENTION_WARNING_CHANNEL_ID unset to disable just the warning.
+RETENTION_WARNING_CHANNEL_ID = int(os.getenv("RETENTION_WARNING_CHANNEL_ID", "0"))
+AUTO_KICK_WARNING_DAYS = int(os.getenv("AUTO_KICK_WARNING_DAYS", "7"))
 
 # Daily social-media reminder: public channel + fixed local time (reuses PROMPT_TZ).
 # Channel defaults to PROMPT_CHANNEL_ID if not set separately.

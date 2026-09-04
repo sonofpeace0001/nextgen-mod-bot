@@ -63,11 +63,18 @@ def init_db():
         key TEXT PRIMARY KEY, value TEXT
     );
     CREATE TABLE IF NOT EXISTS last_activity (
-        user_id INTEGER, guild_id INTEGER, last_seen TEXT,
+        user_id INTEGER, guild_id INTEGER, last_seen TEXT, warned_at TEXT,
         PRIMARY KEY (user_id, guild_id)
     );
     """)
     c.commit()
+    # Migration: last_activity may already exist (pre-warning-feature deploys) without
+    # warned_at. CREATE TABLE IF NOT EXISTS above won't add columns to an existing table.
+    try:
+        c.execute("ALTER TABLE last_activity ADD COLUMN warned_at TEXT")
+        c.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
     # Load ignored channels from DB into config at startup
     _load_ignored_channels()
 
@@ -220,20 +227,32 @@ def kv_set(key, value):
 # ── Member activity (retention / auto-kick) ───────────────────────
 
 def touch_activity(gid, uid):
-    """Record 'seen right now' for this member in this guild."""
+    """Record 'seen right now' for this member in this guild. Also clears any pending
+    inactivity warning, since they're active again -- the warning cycle resets."""
     c = _conn()
     c.execute(
-        "INSERT INTO last_activity (user_id, guild_id, last_seen) VALUES (?,?,datetime('now')) "
-        "ON CONFLICT(user_id, guild_id) DO UPDATE SET last_seen=excluded.last_seen",
+        "INSERT INTO last_activity (user_id, guild_id, last_seen, warned_at) "
+        "VALUES (?,?,datetime('now'),NULL) "
+        "ON CONFLICT(user_id, guild_id) DO UPDATE SET last_seen=excluded.last_seen, warned_at=NULL",
         (uid, gid),
     )
     c.commit()
 
 def get_all_activity(gid):
-    """{user_id: last_seen_str} for every tracked member in this guild, in one query."""
-    return {r[0]: r[1] for r in _conn().execute(
-        "SELECT user_id, last_seen FROM last_activity WHERE guild_id=?", (gid,)
+    """{user_id: (last_seen_str, warned_at_str)} for every tracked member, one query."""
+    return {r[0]: (r[1], r[2]) for r in _conn().execute(
+        "SELECT user_id, last_seen, warned_at FROM last_activity WHERE guild_id=?", (gid,)
     ).fetchall()}
+
+def mark_warned(gid, uid):
+    """Record that the inactivity warning was just sent, so it isn't repeated every day
+    until the member either becomes active again (touch_activity clears it) or is kicked."""
+    c = _conn()
+    c.execute(
+        "UPDATE last_activity SET warned_at=datetime('now') WHERE guild_id=? AND user_id=?",
+        (gid, uid),
+    )
+    c.commit()
 
 def remove_activity(gid, uid):
     c = _conn(); c.execute("DELETE FROM last_activity WHERE guild_id=? AND user_id=?", (gid, uid)); c.commit()
