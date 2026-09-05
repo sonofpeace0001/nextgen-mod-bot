@@ -226,15 +226,24 @@ class ModCog(commands.Cog):
     @app_commands.command(name="xpleaderboard", description="Top XP earners.")
     @app_commands.describe(limit="How many to show (default 10, max 25).")
     async def xpleaderboard(self, i, limit: app_commands.Range[int, 1, 25] = 10):
-        rows = db.get_xp_leaderboard(i.guild.id, limit)
-        if not rows:
+        # Immune roles (Elite/Admin/Escalation) never show on the leaderboard. Immune
+        # status is a live Discord role, not stored data, so over-fetch and filter here
+        # rather than in SQL -- pull a generous buffer so filtering doesn't leave the
+        # list short of the requested size.
+        rows = db.get_xp_leaderboard(i.guild.id, max(limit * 5, 100))
+        lines = []
+        for r in rows:
+            member = i.guild.get_member(r["user_id"])
+            if member and moderation._is_immune(member):
+                continue
+            name = member.display_name if member else f"User {r['user_id']}"
+            lines.append(f"**{name}** -- {r['xp']} XP")
+            if len(lines) >= limit:
+                break
+        if not lines:
             await i.response.send_message("No XP earned yet.", ephemeral=True)
             return
-        lines = []
-        for n, r in enumerate(rows, 1):
-            member = i.guild.get_member(r["user_id"])
-            name = member.display_name if member else f"User {r['user_id']}"
-            lines.append(f"{n}. **{name}** -- {r['xp']} XP")
+        lines = [f"{n}. {line}" for n, line in enumerate(lines, 1)]
         e = discord.Embed(title="XP Leaderboard", description="\n".join(lines), color=discord.Color.gold())
         await i.response.send_message(embed=e)
 
