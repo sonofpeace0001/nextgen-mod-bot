@@ -106,38 +106,6 @@ Rules:
 
 import recommendations
 
-# Voice for all tutor / prompt-helper output (Tasks 4-6).
-TUTOR_SYSTEM_PROMPT = f"""You are the NEXTGEN guide. NEXTGEN is an AI-only learning community that takes total beginners to their first real wins with AI and guides them upward over time.
-
-{COMMUNITY_KNOWLEDGE}
-
-{recommendations.CREAO_RULE}
-
-Voice rules (follow strictly):
-- Plain, warm, lowercase-friendly. Short over long.
-- No emojis. No em dashes.
-- No hype words. Never use: unlock, leverage, elevate, seamless, robust, supercharge, game-changer.
-- Beginner-safe. Plain language, no jargon dumps. Explain like you're talking to one real person.
-- Encourage one small win before any theory.
-- Be honest. If something is hard, say so simply."""
-
-
-async def coach(user_message, context="", max_tokens=300):
-    """LLM call for tutor / prompt-helper output, in the NEXTGEN guide voice.
-
-    The CREAO link itself is appended by the caller in code, never by the model."""
-    messages = [{"role": "system", "content": TUTOR_SYSTEM_PROMPT}]
-    content = ""
-    if context:
-        content += f"Context:\n{context}\n\n"
-    content += user_message
-    messages.append({"role": "user", "content": content})
-    result = await _call(messages, max_tokens=max_tokens, temperature=0.7)
-    if result is None:
-        return "(Briefly unavailable, try again in a moment.)"
-    return result
-
-
 TEACHER_SYSTEM_PROMPT = f"""You are the NEXTGEN guide: a senior prompt engineer and AI mentor with years of hands-on experience. When someone tags you anywhere in the server, you teach them and answer their question or help with their prompt.
 
 {COMMUNITY_KNOWLEDGE}
@@ -170,7 +138,7 @@ Rules for the prompt you write:
 - Output ONLY the prompt itself. No preamble, no sign-off, no tool links or platform names (the code adds the tool recommendation separately)."""
 
 
-async def draft_prompt(category, blueprint, answers, original_request, max_tokens=1300):
+async def draft_prompt(category, blueprint, answers, original_request, max_tokens=1800):
     """Draft a complete, ready-to-paste prompt for the given category using the blueprint
     and the member's answers. Returns the prompt text, or None on failure."""
     user = (
@@ -187,7 +155,7 @@ async def draft_prompt(category, blueprint, answers, original_request, max_token
     return await _call(messages, max_tokens=max_tokens, temperature=0.6)
 
 
-async def teach(message_text, channel_context="", recent_messages=None, max_tokens=340):
+async def teach(message_text, channel_context="", recent_messages=None, max_tokens=700):
     """Senior-prompt-engineer / mentor reply for any message that tags the bot."""
     messages = [{"role": "system", "content": TEACHER_SYSTEM_PROMPT}]
     content = ""
@@ -220,7 +188,15 @@ def _get_client():
 
 
 async def _call(messages, max_tokens=300, temperature=0.7, model=None):
-    """Core LLM call with retry, fallback model, and rate-limit cooldown."""
+    """Core LLM call with retry, fallback model, and rate-limit cooldown.
+
+    Both current models (openai/gpt-oss-*) are reasoning models: they spend part of
+    max_tokens on hidden reasoning before writing the visible reply, and Groq's own
+    guidance is that a low token budget makes an EMPTY or mid-sentence-truncated reply
+    likely, not just slower ("the bot doesn't complete sentences"). reasoning_effort=low
+    plus include_reasoning=False minimizes that hidden spend and keeps .content to just
+    the final answer; callers additionally use a token budget well above what a short
+    Discord reply needs, for headroom."""
     global _last_rate_limit
     client = _get_client()
     if client is None:
@@ -234,13 +210,20 @@ async def _call(messages, max_tokens=300, temperature=0.7, model=None):
     tried_fallback = False
     for attempt in range(3):
         try:
+            extra_body = {}
+            if "gpt-oss" in use_model:
+                extra_body = {"reasoning_effort": "low", "include_reasoning": False}
             resp = await client.chat.completions.create(
                 model=use_model,
                 messages=messages,
-                max_tokens=max_tokens,
+                max_completion_tokens=max_tokens,
                 temperature=temperature,
+                extra_body=extra_body,
             )
-            return resp.choices[0].message.content.strip()
+            content = resp.choices[0].message.content
+            if not content or not content.strip():
+                raise ValueError("empty completion (likely reasoning consumed the token budget)")
+            return content.strip()
         except Exception as e:
             err = str(e).lower()
             is_rate_limit = "rate_limit" in err or "429" in err
@@ -266,7 +249,7 @@ async def _call(messages, max_tokens=300, temperature=0.7, model=None):
     return None
 
 
-async def generate(user_message, context="", max_tokens=300):
+async def generate(user_message, context="", max_tokens=600):
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     content = ""
     if context:
@@ -279,7 +262,7 @@ async def generate(user_message, context="", max_tokens=300):
     return result
 
 
-async def chat_reply(message_text, channel_context="", recent_messages=None, max_tokens=200):
+async def chat_reply(message_text, channel_context="", recent_messages=None, max_tokens=500):
     messages = [{"role": "system", "content": CHAT_SYSTEM_PROMPT}]
     content = ""
     if channel_context:
@@ -298,7 +281,7 @@ async def chat_reply(message_text, channel_context="", recent_messages=None, max
     return result
 
 
-async def ticket_reply(message_text, ticket_history=None, max_tokens=400):
+async def ticket_reply(message_text, ticket_history=None, max_tokens=700):
     """Generate a reply for a ticket/support channel. Returns (reply, needs_escalation)."""
     messages = [{"role": "system", "content": TICKET_SYSTEM_PROMPT}]
     content = ""
@@ -336,7 +319,11 @@ async def classify_violation(text):
             f"Message: {text}"
         )},
     ]
-    result = await _call(messages, max_tokens=60, temperature=0)
+    # Was max_tokens=60. openai/gpt-oss-* spends part of the budget on hidden reasoning
+    # before writing output; at 60 tokens that reasoning alone could exhaust the budget,
+    # leaving nothing for the actual JSON and silently returning empty -> "no violation"
+    # every time. Bumped well above what the tiny JSON reply itself needs.
+    result = await _call(messages, max_tokens=200, temperature=0)
     if result is None:
         return {"violation": False, "category": "none", "severity": 0}
     try:
