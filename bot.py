@@ -4,7 +4,7 @@ import asyncio, logging, traceback, sys, re
 import discord
 from discord.ext import commands
 import config, database as db, moderation, welcome, appeals, reports, roles, chat, tickets
-import tutor, prompthelper, prompts, retention, social
+import tutor, prompthelper, prompts, retention, social, xp
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", stream=sys.stdout)
 log = logging.getLogger("mod-agent")
@@ -42,6 +42,7 @@ class ModerationBot(commands.Bot):
         try:
             await appeals.restore_pending_views(self)
             await reports.restore_pending_views(self)
+            await xp.restore_pending_views(self)
         except Exception as e: log.error(f"Restore error: {e}")
     async def on_ready(self):
         log.info(f"=== ONLINE as {self.user} (id={self.user.id}) ===")

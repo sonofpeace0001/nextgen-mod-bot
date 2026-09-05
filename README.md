@@ -11,8 +11,9 @@ Autonomous Discord moderation bot with AI-powered chat (Groq/GPT-OSS 120B), auto
 - Member reports with mod action buttons
 - Reaction roles
 - Mod notes on user profiles
-- Slash commands: /warn /mute /unmute /ban /tempban /purge /warnings /clearwarnings /modlog /slowmode /lookup /note /reactionrole /report /guide /announce
+- Slash commands: /warn /mute /unmute /ban /tempban /purge /warnings /clearwarnings /modlog /slowmode /lookup /note /reactionrole /report /guide /announce /xpost /xproof /xp /xpleaderboard
 - **/announce**: post an announcement as a Discord embed card (mod-only); defaults to the announcements channel, optional @everyone ping
+- **X (Twitter) engagement XP**: a mod runs `/xpost <link>` to announce a new X post (pings `XP_PING_ROLE_ID`, defaults to `MEMBER_ROLE_ID`). Members run `/xproof <link>` with their own reply/repost link to claim it; a mod approves or denies in the staff channel, same button pattern as reports and ban appeals. XP (`XP_REWARD_AMOUNT`, default 10) is only awarded on approval. Deliberately **no X API involved** — automatically verifying who engaged requires a paid API tier plus every member linking their handle; this uses the same trusted-human-review model the bot already relies on elsewhere. `/xp` checks a balance, `/xpleaderboard` shows the top earners. One submission per member per post (denied ones can be resubmitted).
 - **Tag-to-teach**: @mention the bot anywhere and it answers as a senior prompt engineer / AI mentor — questions, explanations, and ready-to-paste prompts
 - **Welcome DM**: new members get one onboarding question; replies are forwarded to a private staff channel (falls back to the public greet if DMs are closed)
 - **Daily prompt**: one community prompt posted to a public channel each day at a fixed local time, rotating through a 14-prompt bank (state persisted across restarts)
@@ -92,6 +93,8 @@ Then point `SUPABASE_DB_*` (below) at that project and role. `database.py`'s `in
 | SOCIAL_REMINDER_CHANNEL_ID | No | 0 (falls back to PROMPT_CHANNEL_ID) |
 | SOCIAL_REMINDER_HOUR | No | 12 |
 | SOCIAL_LINKS | No | https://x.com/G_NEXTGEN |
+| XP_REWARD_AMOUNT | No | 10 |
+| XP_PING_ROLE_ID | No | 0 (falls back to MEMBER_ROLE_ID) |
 | CH_HELP | No | 0 |
 | LLM_MODEL | No | openai/gpt-oss-120b |
 | CHAT_ENABLED | No | true |

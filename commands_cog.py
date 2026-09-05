@@ -6,6 +6,7 @@ from discord import app_commands
 from discord.ext import commands
 import config, database as db, llm, moderation
 import reports as reports_module
+import xp as xp_module
 
 
 def _has_immune_role(member) -> bool:
@@ -200,6 +201,42 @@ class ModCog(commands.Cog):
             return
         db.log_action(i.guild.id, "ANNOUNCE", i.user.id, str(i.user), title[:200])
         await i.followup.send(f"Announcement posted in {target.mention}.", ephemeral=True)
+
+    # ── X ENGAGEMENT XP ────────────────────────────────────────────
+
+    @app_commands.command(name="xpost", description="Announce a new X post for members to engage with and earn XP.")
+    @app_commands.describe(link="Link to the X post.", note="Optional custom message (default: generic prompt).")
+    @is_immune_only()
+    async def xpost(self, i, link: str, note: str = ""):
+        await i.response.defer(ephemeral=True)
+        await xp_module.announce_x_post(self.bot, i, link, note)
+
+    @app_commands.command(name="xproof", description="Submit proof you engaged with the latest X post, to earn XP.")
+    @app_commands.describe(link="Link to your own reply or repost.")
+    async def xproof(self, i, link: str):
+        await xp_module.submit_proof(self.bot, i, link)
+
+    @app_commands.command(name="xp", description="Check XP balance.")
+    @app_commands.describe(member="Whose XP to check. Leave empty for your own.")
+    async def xp(self, i, member: discord.Member = None):
+        target = member or i.user
+        total = db.get_xp(i.guild.id, target.id)
+        await i.response.send_message(f"{target.mention} has **{total} XP**.", ephemeral=member is None)
+
+    @app_commands.command(name="xpleaderboard", description="Top XP earners.")
+    @app_commands.describe(limit="How many to show (default 10, max 25).")
+    async def xpleaderboard(self, i, limit: app_commands.Range[int, 1, 25] = 10):
+        rows = db.get_xp_leaderboard(i.guild.id, limit)
+        if not rows:
+            await i.response.send_message("No XP earned yet.", ephemeral=True)
+            return
+        lines = []
+        for n, r in enumerate(rows, 1):
+            member = i.guild.get_member(r["user_id"])
+            name = member.display_name if member else f"User {r['user_id']}"
+            lines.append(f"{n}. **{name}** -- {r['xp']} XP")
+        e = discord.Embed(title="XP Leaderboard", description="\n".join(lines), color=discord.Color.gold())
+        await i.response.send_message(embed=e)
 
     # ── CHANNEL IGNORE MANAGEMENT ─────────────────────────────────
 

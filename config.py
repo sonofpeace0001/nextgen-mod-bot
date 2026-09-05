@@ -91,6 +91,14 @@ except ValueError:
     SOCIAL_REMINDER_HOUR = 12
 SOCIAL_LINKS = os.getenv("SOCIAL_LINKS", "https://x.com/G_NEXTGEN")
 
+# X (Twitter) engagement XP: a mod runs /xpost to announce a new post (pings
+# XP_PING_ROLE_ID, defaults to MEMBER_ROLE_ID). Members submit proof of their own
+# engagement with /xproof; a mod approves/denies in STAFF_CHANNEL_ID (falls back to
+# LOG_CHANNEL_ID, same pattern as the welcome-reply forwarding). XP is only awarded on
+# approval -- no X API involved, verification is a human reviewing the submitted link.
+XP_REWARD_AMOUNT = int(os.getenv("XP_REWARD_AMOUNT", "10"))
+XP_PING_ROLE_ID  = int(os.getenv("XP_PING_ROLE_ID", "0")) or MEMBER_ROLE_ID
+
 # Ticket channel detection
 TICKET_KEYWORDS        = os.getenv("TICKET_KEYWORDS", "ticket,support,help-desk").split(",")
 
