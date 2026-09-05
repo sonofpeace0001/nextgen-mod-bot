@@ -125,6 +125,19 @@ def init_db():
         cycle_start TEXT, msg_count INTEGER DEFAULT 0,
         PRIMARY KEY (user_id, guild_id)
     );
+    CREATE TABLE IF NOT EXISTS mod_bot.x_posts (
+        id BIGSERIAL PRIMARY KEY, guild_id BIGINT, link TEXT, note TEXT DEFAULT '',
+        posted_by TEXT, created_at TEXT DEFAULT """ + _NOW + """
+    );
+    CREATE TABLE IF NOT EXISTS mod_bot.xp_submissions (
+        id BIGSERIAL PRIMARY KEY, guild_id BIGINT, user_id BIGINT, x_post_id BIGINT,
+        proof_link TEXT, status TEXT DEFAULT 'pending', message_id BIGINT DEFAULT 0,
+        created_at TEXT DEFAULT """ + _NOW + """
+    );
+    CREATE TABLE IF NOT EXISTS mod_bot.member_xp (
+        user_id BIGINT, guild_id BIGINT, xp INTEGER DEFAULT 0,
+        PRIMARY KEY (user_id, guild_id)
+    );
     """, commit=True)
     _load_ignored_channels()
 
@@ -430,3 +443,67 @@ def mark_warned(gid, uid):
 
 def remove_activity(gid, uid):
     _run("DELETE FROM mod_bot.last_activity WHERE guild_id=%s AND user_id=%s", (gid, uid), commit=True)
+
+# ── X (Twitter) engagement XP ──────────────────────────────────────
+# No X API involved. A mod announces a post (add_x_post); members submit proof of their
+# own engagement (add_xp_submission); a mod approves/denies in the staff channel, same
+# button pattern as reports/appeals. XP is only ever awarded on approval (add_xp).
+
+def add_x_post(gid, link, note, posted_by):
+    r = _run("INSERT INTO mod_bot.x_posts (guild_id,link,note,posted_by) VALUES (%s,%s,%s,%s) RETURNING id",
+              (gid, link, note, posted_by), fetch="one", commit=True)
+    return r["id"]
+
+def get_latest_x_post(gid):
+    return _run("SELECT * FROM mod_bot.x_posts WHERE guild_id=%s ORDER BY id DESC LIMIT 1", (gid,), fetch="one")
+
+def get_x_post(xid):
+    return _run("SELECT * FROM mod_bot.x_posts WHERE id=%s", (xid,), fetch="one")
+
+def add_xp_submission(gid, uid, xid, proof_link):
+    r = _run(
+        "INSERT INTO mod_bot.xp_submissions (guild_id,user_id,x_post_id,proof_link) VALUES (%s,%s,%s,%s) RETURNING id",
+        (gid, uid, xid, proof_link), fetch="one", commit=True,
+    )
+    return r["id"]
+
+def get_xp_submission(sid):
+    return _run("SELECT * FROM mod_bot.xp_submissions WHERE id=%s", (sid,), fetch="one")
+
+def get_existing_submission(gid, uid, xid):
+    """A member's non-denied submission for this specific post, if any -- used to block
+    duplicate submissions (denied ones can be resubmitted)."""
+    return _run(
+        "SELECT * FROM mod_bot.xp_submissions WHERE guild_id=%s AND user_id=%s AND x_post_id=%s "
+        "AND status != 'denied'",
+        (gid, uid, xid), fetch="one",
+    )
+
+def update_submission_status(sid, status):
+    _run("UPDATE mod_bot.xp_submissions SET status=%s WHERE id=%s", (status, sid), commit=True)
+
+def update_submission_message(sid, mid):
+    _run("UPDATE mod_bot.xp_submissions SET message_id=%s WHERE id=%s", (mid, sid), commit=True)
+
+def get_pending_submissions():
+    return _run("SELECT * FROM mod_bot.xp_submissions WHERE status='pending'", fetch="all")
+
+def add_xp(gid, uid, amount):
+    """Increment (or start) a member's XP total. Returns the new total."""
+    r = _run(
+        "INSERT INTO mod_bot.member_xp (user_id, guild_id, xp) VALUES (%s,%s,%s) "
+        "ON CONFLICT (user_id, guild_id) DO UPDATE SET xp=mod_bot.member_xp.xp+EXCLUDED.xp "
+        "RETURNING xp",
+        (uid, gid, amount), fetch="one", commit=True,
+    )
+    return r["xp"]
+
+def get_xp(gid, uid):
+    r = _run("SELECT xp FROM mod_bot.member_xp WHERE guild_id=%s AND user_id=%s", (gid, uid), fetch="one")
+    return r["xp"] if r else 0
+
+def get_xp_leaderboard(gid, limit=10):
+    return _run(
+        "SELECT user_id, xp FROM mod_bot.member_xp WHERE guild_id=%s ORDER BY xp DESC LIMIT %s",
+        (gid, limit), fetch="all",
+    )
