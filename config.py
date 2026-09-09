@@ -99,6 +99,19 @@ SOCIAL_LINKS = os.getenv("SOCIAL_LINKS", "https://x.com/G_NEXTGEN")
 XP_REWARD_AMOUNT = int(os.getenv("XP_REWARD_AMOUNT", "10"))
 XP_PING_ROLE_ID  = int(os.getenv("XP_PING_ROLE_ID", "0")) or MEMBER_ROLE_ID
 
+# Dedicated channel for XP activity: /xpost announcements land here (falls back to
+# wherever the command was run if unset), and the daily leaderboard posts here too.
+XP_ANNOUNCE_CHANNEL_ID = int(os.getenv("XP_ANNOUNCE_CHANNEL_ID", "0"))
+
+# Daily XP leaderboard post (reuses PROMPT_TZ for the local timezone). No-op if
+# XP_ANNOUNCE_CHANNEL_ID isn't set, since there'd be nowhere to post it.
+XP_LEADERBOARD_ENABLED = os.getenv("XP_LEADERBOARD_ENABLED", "true").lower() == "true"
+# Same crash risk as PROMPT_HOUR above: clamp so a bad env var can't take the whole bot down.
+try:
+    XP_LEADERBOARD_HOUR = min(23, max(0, int(os.getenv("XP_LEADERBOARD_HOUR", "9"))))
+except ValueError:
+    XP_LEADERBOARD_HOUR = 9
+
 # Ticket channel detection
 TICKET_KEYWORDS        = os.getenv("TICKET_KEYWORDS", "ticket,support,help-desk").split(",")
 

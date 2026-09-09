@@ -13,7 +13,8 @@ Autonomous Discord moderation bot with AI-powered chat (Groq/GPT-OSS 120B), auto
 - Mod notes on user profiles
 - Slash commands: /warn /mute /unmute /ban /tempban /purge /warnings /clearwarnings /modlog /slowmode /lookup /note /reactionrole /report /guide /announce /xpost /xproof /addxp /removexp /xp /xpleaderboard
 - **/announce**: post an announcement as a Discord embed card (mod-only); defaults to the announcements channel, optional @everyone ping
-- **X (Twitter) engagement XP**: a mod runs `/xpost <link>` to announce a new X post (pings `XP_PING_ROLE_ID`, defaults to `MEMBER_ROLE_ID`). Members run `/xproof <link>` with their own reply/repost link to claim it; a mod approves or denies in the staff channel, same button pattern as reports and ban appeals. XP (`XP_REWARD_AMOUNT`, default 10) is only awarded on approval. Deliberately **no X API involved** — automatically verifying who engaged requires a paid API tier plus every member linking their handle; this uses the same trusted-human-review model the bot already relies on elsewhere. One submission per member per post (denied ones can be resubmitted).
+- **X (Twitter) engagement XP**: a mod runs `/xpost <link>` to announce a new X post (posts in `XP_ANNOUNCE_CHANNEL_ID` if set, otherwise wherever the command was run; pings `XP_PING_ROLE_ID`, defaults to `MEMBER_ROLE_ID`). Members run `/xproof <link>` with their own reply/repost link to claim it; a mod approves or denies in the staff channel, same button pattern as reports and ban appeals. XP (`XP_REWARD_AMOUNT`, default 10) is only awarded on approval. Deliberately **no X API involved** — automatically verifying who engaged requires a paid API tier plus every member linking their handle; this uses the same trusted-human-review model the bot already relies on elsewhere. One submission per member per post (denied ones can be resubmitted).
+- **Daily XP leaderboard**: if `XP_ANNOUNCE_CHANNEL_ID` is set, the top earners (`/xpleaderboard`'s own immune-role filtering) auto-post there every morning at `XP_LEADERBOARD_HOUR` (default 9, local `PROMPT_TZ`). Skips quietly if nobody's earned XP yet, and never double-posts on a restart. Set `XP_LEADERBOARD_ENABLED=false` to turn it off without unsetting the channel.
 - **/addxp** / **/removexp** (mod-only): award or correct XP directly for any task, not just X engagement — the mod's own review is the verification, no submission/approval step. XP is clamped at 0, so an over-correction never leaves someone negative. `/xp` checks a balance, `/xpleaderboard` shows the top earners (immune roles never appear on it).
 - **Tag-to-teach**: @mention the bot anywhere and it answers as a senior prompt engineer / AI mentor — questions, explanations, and ready-to-paste prompts
 - **Welcome DM**: new members get one onboarding question; replies are forwarded to a private staff channel (falls back to the public greet if DMs are closed)
@@ -96,6 +97,9 @@ Then point `SUPABASE_DB_*` (below) at that project and role. `database.py`'s `in
 | SOCIAL_LINKS | No | https://x.com/G_NEXTGEN |
 | XP_REWARD_AMOUNT | No | 10 |
 | XP_PING_ROLE_ID | No | 0 (falls back to MEMBER_ROLE_ID) |
+| XP_ANNOUNCE_CHANNEL_ID | No | 0 (falls back to the /xpost command's channel; no leaderboard posts if unset) |
+| XP_LEADERBOARD_ENABLED | No | true |
+| XP_LEADERBOARD_HOUR | No | 9 |
 | CH_HELP | No | 0 |
 | LLM_MODEL | No | openai/gpt-oss-120b |
 | CHAT_ENABLED | No | true |

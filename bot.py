@@ -53,6 +53,7 @@ class ModerationBot(commands.Bot):
             log.info(f"Guild '{g.name}': administrator={me.guild_permissions.administrator}")
         prompts.start(self)  # daily prompt scheduler (no-op if PROMPT_CHANNEL_ID unset)
         social.start(self)   # daily social-media reminder (no-op if unset)
+        xp.start(self)       # daily XP leaderboard post (no-op if XP_ANNOUNCE_CHANNEL_ID unset)
         await retention.seed_and_start(self)  # auto-kick scheduler (seeds activity first)
 
     async def on_message(self, message):
