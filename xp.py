@@ -8,8 +8,27 @@ staff channel -- the exact same trusted-human-review pattern this bot already us
 reports and ban appeals. XP is only ever awarded on approval.
 """
 from __future__ import annotations
-import discord, config, database as db, logging
+import datetime, logging
+import discord, config, database as db, moderation
+from discord.ext import tasks
+
 log = logging.getLogger("xp")
+
+_bot = None
+
+
+def _tzinfo():
+    """Resolve PROMPT_TZ, falling back to WAT (UTC+1) if zoneinfo/tzdata is missing."""
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(config.PROMPT_TZ)
+    except Exception as e:
+        log.warning(f"Could not load tz '{config.PROMPT_TZ}' ({e}); using fixed UTC+1.")
+        return datetime.timezone(datetime.timedelta(hours=1))
+
+
+_TZ = _tzinfo()
+_LAST_LEADERBOARD_DATE_KEY = "xp_leaderboard_last_date"
 
 
 class XPSubmissionView(discord.ui.View):
@@ -68,8 +87,9 @@ def _staff_channel(guild):
 
 
 async def announce_x_post(bot, interaction, link, note):
-    """Handle /xpost: record the post, announce it in the channel the command was run
-    in, and ping the configured role. Mod-only, gated by the caller."""
+    """Handle /xpost: record the post, announce it in XP_ANNOUNCE_CHANNEL_ID (falls
+    back to the channel the command was run in if unset), and ping the configured
+    role. Mod-only, gated by the caller."""
     xid = db.add_x_post(interaction.guild.id, link, note or "", str(interaction.user))
     e = discord.Embed(
         title="new post from NEXTGEN, go engage",
@@ -84,15 +104,19 @@ async def announce_x_post(bot, interaction, link, note):
     )
     e.set_footer(text=f"Posted by {interaction.user.display_name}")
     ping = f"<@&{config.XP_PING_ROLE_ID}>" if config.XP_PING_ROLE_ID else None
+    target = interaction.channel
+    if config.XP_ANNOUNCE_CHANNEL_ID:
+        target = interaction.guild.get_channel(config.XP_ANNOUNCE_CHANNEL_ID) or interaction.channel
     try:
-        await interaction.channel.send(
+        await target.send(
             content=ping, embed=e,
             allowed_mentions=discord.AllowedMentions(roles=True, everyone=False, users=False),
         )
     except discord.Forbidden:
-        await interaction.followup.send("I can't post here (missing permissions).", ephemeral=True)
+        await interaction.followup.send("I can't post there (missing permissions).", ephemeral=True)
         return
-    await interaction.followup.send(f"Posted. (post #{xid})", ephemeral=True)
+    where = f" in {target.mention}" if target.id != interaction.channel.id else ""
+    await interaction.followup.send(f"Posted{where}. (post #{xid})", ephemeral=True)
 
 
 async def submit_proof(bot, interaction, proof_link):
@@ -135,3 +159,69 @@ async def submit_proof(bot, interaction, proof_link):
 async def restore_pending_views(bot):
     for s in db.get_pending_submissions():
         bot.add_view(XPSubmissionView(s["id"]))
+
+
+def build_leaderboard_embed(guild, limit=10):
+    """Shared by /xpleaderboard and the daily auto-post: top XP earners, excluding
+    immune-role holders. Immune status is a live Discord role, not stored data, so
+    over-fetch and filter here rather than in SQL. Returns None if nobody's earned yet."""
+    rows = db.get_xp_leaderboard(guild.id, max(limit * 5, 100))
+    lines = []
+    for r in rows:
+        member = guild.get_member(r["user_id"])
+        if member and moderation._is_immune(member):
+            continue
+        name = member.display_name if member else f"User {r['user_id']}"
+        lines.append(f"**{name}** -- {r['xp']} XP")
+        if len(lines) >= limit:
+            break
+    if not lines:
+        return None
+    lines = [f"{n}. {line}" for n, line in enumerate(lines, 1)]
+    return discord.Embed(title="XP Leaderboard", description="\n".join(lines), color=discord.Color.gold())
+
+
+@tasks.loop(time=datetime.time(hour=config.XP_LEADERBOARD_HOUR, minute=0, tzinfo=_TZ))
+async def _daily_leaderboard():
+    if _bot is None or not config.XP_LEADERBOARD_ENABLED or not config.XP_ANNOUNCE_CHANNEL_ID:
+        return
+    today = datetime.datetime.now(_TZ).date().isoformat()
+    if db.kv_get(_LAST_LEADERBOARD_DATE_KEY) == today:
+        return  # already posted today (e.g. restart after the scheduled time)
+
+    ch = _bot.get_channel(config.XP_ANNOUNCE_CHANNEL_ID)
+    if not ch:
+        log.warning("XP_ANNOUNCE_CHANNEL_ID not set or channel not found; skipping daily leaderboard.")
+        return
+
+    e = build_leaderboard_embed(ch.guild)
+    if e is None:
+        db.kv_set(_LAST_LEADERBOARD_DATE_KEY, today)
+        return  # nobody's earned XP yet, nothing worth posting
+    try:
+        await ch.send(content="morning leaderboard check -- who's earning XP:", embed=e)
+        db.kv_set(_LAST_LEADERBOARD_DATE_KEY, today)
+        log.info(f"Posted daily XP leaderboard to channel {config.XP_ANNOUNCE_CHANNEL_ID}.")
+    except Exception as ex:
+        log.error(f"Failed to post daily XP leaderboard: {ex}")
+
+
+@_daily_leaderboard.before_loop
+async def _before():
+    if _bot is not None:
+        await _bot.wait_until_ready()
+
+
+def start(bot):
+    """Start the daily leaderboard scheduler. No-op if disabled or no announce channel."""
+    global _bot
+    _bot = bot
+    if not config.XP_LEADERBOARD_ENABLED:
+        log.info("XP_LEADERBOARD_ENABLED is false; daily XP leaderboard disabled.")
+        return
+    if not config.XP_ANNOUNCE_CHANNEL_ID:
+        log.info("XP_ANNOUNCE_CHANNEL_ID not set; daily XP leaderboard disabled.")
+        return
+    if not _daily_leaderboard.is_running():
+        _daily_leaderboard.start()
+        log.info(f"Daily XP leaderboard started ({config.XP_LEADERBOARD_HOUR}:00 {config.PROMPT_TZ}).")
