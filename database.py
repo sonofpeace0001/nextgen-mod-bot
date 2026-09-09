@@ -489,12 +489,22 @@ def get_pending_submissions():
     return _run("SELECT * FROM mod_bot.xp_submissions WHERE status='pending'", fetch="all")
 
 def add_xp(gid, uid, amount):
-    """Increment (or start) a member's XP total. Returns the new total."""
+    """Increment (or start) a member's XP total by `amount` (negative to deduct).
+    Clamped at 0 -- a correction that overshoots never leaves someone with negative XP.
+    Returns the new total.
+
+    amount is passed twice: once for the fresh-row INSERT (clamped there too, so
+    deducting from a member with no record yet lands at 0, not negative), and once as
+    the RAW delta added on the UPDATE path. Referencing EXCLUDED.xp for that delta
+    instead would silently use the already-clamped insert value -- turning every
+    deduction into a no-op, since GREATEST(0, negative) collapses the sign to 0 before
+    it ever reaches the addition. Caught this in testing before it shipped."""
     r = _run(
-        "INSERT INTO mod_bot.member_xp (user_id, guild_id, xp) VALUES (%s,%s,%s) "
-        "ON CONFLICT (user_id, guild_id) DO UPDATE SET xp=mod_bot.member_xp.xp+EXCLUDED.xp "
+        "INSERT INTO mod_bot.member_xp (user_id, guild_id, xp) VALUES (%s,%s,GREATEST(0,%s)) "
+        "ON CONFLICT (user_id, guild_id) DO UPDATE SET "
+        "xp=GREATEST(0, mod_bot.member_xp.xp+%s) "
         "RETURNING xp",
-        (uid, gid, amount), fetch="one", commit=True,
+        (uid, gid, amount, amount), fetch="one", commit=True,
     )
     return r["xp"]
 
