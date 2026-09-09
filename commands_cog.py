@@ -216,6 +216,46 @@ class ModCog(commands.Cog):
     async def xproof(self, i, link: str):
         await xp_module.submit_proof(self.bot, i, link)
 
+    @app_commands.command(name="addxp", description="Manually award XP for any task -- your review IS the verification.")
+    @app_commands.describe(
+        member="Who to award XP to.",
+        amount="How much XP (1-1000).",
+        task="What they did, shown to them in the DM (e.g. 'helped design the banner').",
+    )
+    @is_immune_only()
+    async def addxp(self, i, member: discord.Member, amount: app_commands.Range[int, 1, 1000], task: str = ""):
+        await i.response.defer(ephemeral=True)
+        total = db.add_xp(i.guild.id, member.id, amount)
+        db.log_action(i.guild.id, "XP AWARDED", member.id, str(i.user),
+                       f"+{amount} XP for: {task or 'manual award'} (total {total})")
+        try:
+            msg = f"you were awarded +{amount} XP"
+            if task: msg += f" for: {task}"
+            msg += f". you're at {total} XP now."
+            await member.send(msg)
+        except Exception: pass
+        await i.followup.send(f"Awarded {amount} XP to {member.mention} (total: {total}).", ephemeral=True)
+
+    @app_commands.command(name="removexp", description="Correct a mistaken XP award by removing XP from a member.")
+    @app_commands.describe(
+        member="Who to remove XP from.",
+        amount="How much XP to remove (1-1000). Never drops below 0.",
+        reason="Why, shown to them in the DM.",
+    )
+    @is_immune_only()
+    async def removexp(self, i, member: discord.Member, amount: app_commands.Range[int, 1, 1000], reason: str = ""):
+        await i.response.defer(ephemeral=True)
+        total = db.add_xp(i.guild.id, member.id, -amount)
+        db.log_action(i.guild.id, "XP REMOVED", member.id, str(i.user),
+                       f"-{amount} XP: {reason or 'correction'} (total {total})")
+        try:
+            msg = f"{amount} XP was removed from your balance"
+            if reason: msg += f": {reason}"
+            msg += f". you're at {total} XP now."
+            await member.send(msg)
+        except Exception: pass
+        await i.followup.send(f"Removed {amount} XP from {member.mention} (total: {total}).", ephemeral=True)
+
     @app_commands.command(name="xp", description="Check XP balance.")
     @app_commands.describe(member="Whose XP to check. Leave empty for your own.")
     async def xp(self, i, member: discord.Member = None):
