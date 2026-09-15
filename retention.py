@@ -1,19 +1,22 @@
-"""Auto-kick members who don't meet the activity quota, with a warning first.
+"""Auto-kick members who don't meet the activity quota, with daily warnings first.
 
 Each non-immune, non-founder, non-bot member has a rolling "cycle": they need to send
 AUTO_KICK_REQUIRED_MESSAGES messages (default 10) within AUTO_KICK_INACTIVE_DAYS days
 (default 14) of their cycle starting, or they're kicked when the cycle ends. Once a day:
 
-  - AUTO_KICK_WARNING_DAYS into the cycle (default 7, the halfway point) and still short
-    of the quota -> ping them once in RETENTION_WARNING_CHANNEL_ID showing their progress
-    and the consequence.
+  - From AUTO_KICK_WARNING_DAYS into the cycle onward (default 7, the halfway point) and
+    still short of the quota -> ping them in RETENTION_WARNING_CHANNEL_ID showing their
+    progress and the consequence. This repeats every day (at most once per calendar day)
+    until they either catch up or the cycle ends, not just once -- a member who's still
+    short a week later shouldn't have gone quiet on the reminder front too.
   - AUTO_KICK_INACTIVE_DAYS into the cycle: quota met -> the cycle resets fresh (0/quota,
     warning cleared). Quota missed -> kicked.
 
 Immune-role holders and the founder are always exempt (see moderation._is_immune /
-config.FOUNDER_ID). The warning fires at most once per cycle: it's cleared the moment the
-cycle resets, so a member who falls short again next time gets a fresh warning, never
-silence straight to a kick.
+config.FOUNDER_ID). `warned_at` tracks the date of the *last* warning (not just whether
+one was ever sent), so the daily check re-warns anyone still short who wasn't already
+warned today. It's cleared the moment the cycle resets, so a member who falls short
+again next cycle gets a fresh run of warnings, never silence straight to a kick.
 
 Safety: activity is tracked going forward from the moment this feature is deployed. On
 first startup, seed_and_start() gives every member the bot doesn't already have a record
@@ -107,6 +110,7 @@ async def _daily_check():
     if _bot is None or not config.AUTO_KICK_ENABLED:
         return
     now = datetime.datetime.utcnow()
+    today = now.date().isoformat()
     quota = config.AUTO_KICK_REQUIRED_MESSAGES
     for guild in _bot.guilds:
         try:
@@ -115,7 +119,7 @@ async def _daily_check():
             log.error(f"Failed to read activity for guild {guild.id}: {e}")
             continue
 
-        to_warn = []  # (member, msg_count) pairs
+        to_warn = []  # (member, msg_count, days_left) tuples
         for member in list(guild.members):
             if _is_exempt(member):
                 continue
@@ -132,10 +136,14 @@ async def _daily_check():
                     await asyncio.sleep(1)  # be gentle with the API on larger sweeps
                 continue
 
+            # warned_at stores the date of the last warning, so this fires once per
+            # calendar day -- every day from the halfway point on, not just once total.
+            last_warned_date = (warned_at_raw or "")[:10]
             if (days_elapsed >= config.AUTO_KICK_WARNING_DAYS
                     and msg_count < quota
-                    and not warned_at_raw):
-                to_warn.append((member, msg_count))
+                    and last_warned_date != today):
+                days_left = max(round(config.AUTO_KICK_INACTIVE_DAYS - days_elapsed), 1)
+                to_warn.append((member, msg_count, days_left))
                 db.mark_warned(guild.id, member.id)
 
         if to_warn:
@@ -156,8 +164,9 @@ def _parse_cycle_start(raw, member) -> datetime.datetime:
 
 
 async def _send_warnings(guild, entries):
-    """Ping each member short of quota at the halfway mark (exempt roles already filtered
-    by the caller), showing their progress and the consequence."""
+    """Ping each member short of quota who hasn't been warned yet today (exempt roles
+    already filtered by the caller), showing their progress and days left in THEIR
+    cycle -- this runs daily, so days-left shrinks each time a repeat warning goes out."""
     ch = guild.get_channel(config.RETENTION_WARNING_CHANNEL_ID)
     if not ch:
         log.warning(
@@ -167,17 +176,18 @@ async def _send_warnings(guild, entries):
         )
         return
     quota = config.AUTO_KICK_REQUIRED_MESSAGES
-    days_left = max(config.AUTO_KICK_INACTIVE_DAYS - config.AUTO_KICK_WARNING_DAYS, 1)
-    plural = "s" if days_left != 1 else ""
     allowed = discord.AllowedMentions(everyone=False, roles=False, users=True)
     CHUNK = 15  # each line carries a progress count, keep messages a reasonable size
     for i in range(0, len(entries), CHUNK):
         chunk = entries[i:i + CHUNK]
-        lines = [f"{m.mention} -- {c}/{quota} messages" for m, c in chunk]
+        lines = [
+            f"{m.mention} -- {c}/{quota} messages, {d} day{'s' if d != 1 else ''} left"
+            for m, c, d in chunk
+        ]
         text = (
             "heads up, you're behind on activity:\n" + "\n".join(lines) + "\n\n"
             f"you need {quota} messages every {config.AUTO_KICK_INACTIVE_DAYS} days to stay in "
-            f"NEXTGEN. you've got {days_left} more day{plural} to catch up before you're removed."
+            f"NEXTGEN, or you'll be removed when your time's up."
         )
         try:
             await ch.send(text, allowed_mentions=allowed)
