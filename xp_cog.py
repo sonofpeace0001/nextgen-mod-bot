@@ -876,13 +876,13 @@ class XPCog(commands.Cog):
         n = self.engine.cycle_of(now)
         start, end = self.engine.cycle_range(n)
         rows = self.engine.leaderboard(lane, "cycle", now, hide, limit=pc.BOARD["top"])
-        body = "\n".join(f"{r}. **{self._name(guild, u)}** -- {p} XP" for r, u, p in rows) or "No points yet."
+        body = "\n".join(f"{r}. {self._who(guild, u)} -- {p} XP" for r, u, p in rows) or "No points yet."
         e = discord.Embed(title=self.BOARD_TITLES[lane], color=discord.Color.gold(),
                           description=f"Cycle {n}, {_cycle_text(start, end)}.\n\n{body}")
         alltime = self.engine.leaderboard(lane, "alltime", now, hide, limit=5)
         if alltime:
             e.add_field(name="All time", value="\n".join(
-                f"{r}. **{self._name(guild, u)}** -- {p} XP" for r, u, p in alltime), inline=False)
+                f"{r}. {self._who(guild, u)} -- {p} XP" for r, u, p in alltime), inline=False)
         e.set_footer(text="Updates automatically")
         e.timestamp = now
         return e
@@ -1079,6 +1079,13 @@ class XPCog(commands.Cog):
     async def _daily_ready(self):
         await self.bot.wait_until_ready()
 
+    def _who(self, guild, uid):
+        """A leaderboard entry: the member's name in bold, tagged (Elite) if they hold the Elite role."""
+        m = guild.get_member(uid)
+        name = m.display_name if m else f"User {uid}"
+        elite = bool(m and config.ELITE_ROLE_ID and any(r.id == config.ELITE_ROLE_ID for r in m.roles))
+        return f"**{name}**" + (" (Elite)" if elite else "")
+
     def _name(self, guild, uid):
         m = guild.get_member(uid)
         return m.display_name if m else f"User {uid}"
@@ -1095,7 +1102,7 @@ class XPCog(commands.Cog):
             rows = self.engine.leaderboard(lane, "cycle", now, hide, limit=5)
             if rows:
                 any_rows = True
-            body = "\n".join(f"{r}. **{self._name(guild, u)}** -- {p}" for r, u, p in rows) or "No points yet."
+            body = "\n".join(f"{r}. {self._who(guild, u)} -- {p}" for r, u, p in rows) or "No points yet."
             e.add_field(name=f"{LANE_TITLES[lane]} XP", value=body, inline=True)
         return e if any_rows else None
 
@@ -1137,7 +1144,7 @@ class XPCog(commands.Cog):
         def make(page):
             chunk = rows[page * size:(page + 1) * size]
             e = discord.Embed(title=f"{LANE_TITLES[lane]} leaderboard", color=discord.Color.gold(),
-                              description="\n".join(f"{r}. **{self._name(i.guild, u)}** -- {p} XP" for r, u, p in chunk))
+                              description="\n".join(f"{r}. {self._who(i.guild, u)} -- {p} XP" for r, u, p in chunk))
             e.set_footer(text=f"{when} | page {page + 1} of {pages}")
             return e
 

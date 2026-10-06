@@ -541,16 +541,35 @@ class TestLiveLeaderboards(EngageCase):
         reach = self.board_reach.send.await_args.kwargs["embed"]
         self.assertEqual((build.title, reach.title), ("Build leaderboard", "Engagement leaderboard"))
         self.assertIn("1. **user7** -- 30 XP", build.description)
-        self.assertIn("2. **user20** -- 20 XP", build.description)
+        self.assertIn("2. **user20** (Elite) -- 20 XP", build.description)
         self.assertNotIn("user8", build.description)                          # Reach-only points stay off the Build board
         self.assertIn("1. **user8** -- 40 XP", reach.description)
-        self.assertIn("2. **user20** -- 15 XP", reach.description)
+        self.assertIn("2. **user20** (Elite) -- 15 XP", reach.description)
 
     async def test_elites_are_visible_and_people_above_elite_are_hidden(self):
         await self.cog.update_boards()
         build = self.board_build.send.await_args.kwargs["embed"].description
         self.assertIn("user20", build)       # Elite shows up, starting from zero and earning
         self.assertNotIn("user21", build)    # a moderator's 500 does not
+
+    async def test_elites_are_tagged_everywhere_and_only_elites(self):
+        embed = self.cog.board_embed(self.guild, pc.BUILDER)
+        self.assertIn("1. **user7** -- 30 XP", embed.description)           # not an Elite: no tag
+        self.assertIn("2. **user20** (Elite) -- 20 XP", embed.description)
+        self.assertIn("**user20** (Elite) -- 20 XP", embed.fields[0].value)  # the all-time list too
+        self.assertNotIn("user7** (Elite)", embed.description + embed.fields[0].value)
+
+    async def test_the_leaderboard_command_and_the_daily_summary_tag_elites_too(self):
+        i = self.inter(self.plain)
+        with mock.patch.object(xp_cog, "now_utc", return_value=NOW):
+            await xp_cog.XPCog.xpleaderboard.callback(self.cog, i, "builder", "cycle")
+            summary = self.cog.board_summary_embed(self.guild)
+        self.assertIn("**user20** (Elite) -- 20 XP", i.followup.send.await_args.kwargs["embed"].description)
+        self.assertIn("**user20** (Elite)", " ".join(f.value for f in summary.fields))
+
+    async def test_without_an_elite_role_configured_nobody_is_tagged(self):
+        with mock.patch.object(config, "ELITE_ROLE_ID", 0):
+            self.assertNotIn("(Elite)", self.cog._who(self.guild, 20))
 
     async def test_the_message_is_edited_in_place_not_reposted(self):
         await self.cog.update_boards()
