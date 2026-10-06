@@ -49,7 +49,8 @@ class TestCommandTree(unittest.IsolatedAsyncioTestCase):
             return await real_load(name, **kw)
 
         b.load_extension = tracking_load
-        with mock.patch.object(bot_module.db, "init_db"), mock.patch.object(Store, "__init__", _sqlite_init):
+        with mock.patch.object(bot_module.db, "init_db"), mock.patch.object(Store, "__init__", _sqlite_init), \
+                mock.patch.object(bot_module.db, "kv_get", return_value="1"):  # legacy import already done
             await b.setup_hook()
         self.assertEqual(order, ["xp_cog", "commands_cog"])
         names = [c.name for c in b.tree.get_commands()]

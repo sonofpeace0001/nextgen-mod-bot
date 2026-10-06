@@ -91,6 +91,8 @@ Invite use counts are cached at startup and on invite create/delete; when someon
 
 (The old single-points commands `/xproof`, `/addxp` and `/removexp` are retired. The old `member_xp`, `x_posts` and `xp_submissions` tables are untouched and kept for reference.)
 
+**Old XP carried over as Reach XP.** On the first start after this shipped, each member's old `member_xp` balance was copied into the ledger once, as Reach XP (category `legacy_import`, award key `legacy:{guild}:{user}`), stamped at the start of the cycle that was current at that moment, so it counts toward that cycle and all-time totals. It cannot run twice (unique key plus a done flag), skips excluded members, and never modifies the old table. Imported Reach XP alone does not put anyone on the Elite shortlist, because that needs the Builder minimum too. To correct an individual balance, use `/xpadjust`.
+
 
 ## Database
 Persistence is Postgres via Supabase, not a local file. **This matters on Railway: a local SQLite file lives on the container's disk, which Railway wipes on every deploy and restart** — warnings, mod logs, appeals, and retention progress would silently vanish every time the bot redeployed. Postgres survives that.

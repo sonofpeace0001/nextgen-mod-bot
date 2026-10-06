@@ -381,8 +381,10 @@ class XPCog(commands.Cog):
         return "\n".join(lines) or "Approved."
 
     def hide_fn(self, guild):
-        """Hidden from leaderboards: people who left, and immune-role holders (Elite, staff)."""
+        """Hidden from leaderboards: the founder, people who left, and immune-role holders (Elite, staff)."""
         def hide(uid):
+            if uid == config.FOUNDER_ID:
+                return True
             m = guild.get_member(uid)
             return m is None or moderation._is_immune(m)
         return hide
@@ -983,8 +985,29 @@ class XPCog(commands.Cog):
         await i.followup.send(f"Posted in {ch.mention}.", ephemeral=True)
 
 
+LEGACY_FLAG = "points_legacy_import_done"
+
+
+def run_legacy_import(engine):
+    """One-time import of the old XP balances as Reach XP. Safe to call at every start: it does
+    nothing once done, and the ledger keys stop any double payment even if it ran twice. A
+    failure is logged and retried at the next start; it never stops the bot from starting."""
+    try:
+        if db.kv_get(LEGACY_FLAG) == "1":
+            return None
+        res = engine.import_legacy_xp(now_utc())
+        db.kv_set(LEGACY_FLAG, "1")
+        log.info("Legacy XP import: %s members, %s Reach XP added (%s already imported, %s excluded), "
+                 "stamped %s UTC.", res["imported"], res["points"], res["already"], res["excluded"], res["stamp"])
+        return res
+    except Exception:
+        log.exception("Legacy XP import failed; it will be retried at the next start.")
+        return None
+
+
 async def setup(bot):
     store = Store(db._run, "pg")
     store.init_schema()
     engine = xe.Engine(store, xe.Rules.from_config(config))
+    run_legacy_import(engine)
     await bot.add_cog(XPCog(bot, store, engine))

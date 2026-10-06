@@ -126,6 +126,12 @@ CHALLENGE = dict(
     share_category="weekly_challenge_share",
 )
 
+# One-time import of the old single XP balance (member_xp) into the ledger as Reach XP.
+# Each member gets one row keyed legacy:{guild}:{user}, so running it again changes nothing.
+# Rows are stamped at the start of the cycle that is current when the import runs, so they
+# count toward that cycle and toward all-time totals.
+LEGACY_IMPORT = dict(lane=REACH, category="legacy_import", reason="imported from the old XP balance")
+
 # Strikes (zero-points / spam). Staff are alerted at this many.
 STRIKE_ALERT_AT = 3
 

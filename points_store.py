@@ -228,6 +228,10 @@ class Store:
             params += list(channel_ids)
         return int(self._one(sql, params)["n"])
 
+    def legacy_xp_rows(self):
+        """The old single-balance XP table (read only, never modified)."""
+        return self._all(f"SELECT user_id, guild_id, xp FROM {self.p}member_xp WHERE xp>0 ORDER BY xp DESC, user_id")
+
     def first_lesson(self, user_id):
         """The member's earliest approved Academy lesson (a paid academy_lesson row)."""
         return self._one(

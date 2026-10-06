@@ -626,6 +626,77 @@ class TestLeaderboardAndReview(Base):
         self.assertEqual(self.e.cycle_review(dt(2026, 10, 10))["top_referrer"], {"user_id": 100, "points": 10})
 
 
+class TestLegacyImport(Base):
+    OLD = [(10, 1, 3000), (11, 1, 860), (12, 1, 535), (13, 1, 10)]
+
+    def setUp(self):
+        super().setUp()
+        self.s._exec("CREATE TABLE member_xp (user_id BIGINT, guild_id BIGINT, xp INTEGER, PRIMARY KEY (user_id, guild_id))")
+        for u, g, xp in self.OLD + [(14, 1, 0)]:
+            self.s._exec("INSERT INTO member_xp (user_id, guild_id, xp) VALUES (%s,%s,%s)", (u, g, xp))
+
+    def old_rows(self):
+        return self.s._all("SELECT user_id, guild_id, xp FROM member_xp ORDER BY user_id")
+
+    def test_old_balances_become_reach_xp_stamped_at_the_start_of_the_current_cycle(self):
+        res = self.e.import_legacy_xp(dt(2026, 10, 6, 9))
+        self.assertEqual((res["imported"], res["points"], res["already"], res["excluded"]), (4, 4405, 0, 0))
+        self.assertEqual(res["stamp"], "2026-10-05 00:00:00")
+        row = self.s.get_award("legacy:1:11")
+        self.assertEqual((row["lane"], row["category"], row["points"], row["created_at"], row["submission_id"]),
+                         ("reach", "legacy_import", 860, "2026-10-05 00:00:00", None))
+        self.assertEqual(self.pts(11, "reach"), 860)
+        self.assertEqual(self.pts(11, "builder"), 0)
+        self.assertEqual(self.s.get_award("legacy:1:14"), None)  # a zero balance is not imported
+
+    def test_it_is_idempotent(self):
+        first = self.e.import_legacy_xp(dt(2026, 10, 6))
+        again = self.e.import_legacy_xp(dt(2026, 10, 7))
+        self.assertEqual((again["imported"], again["already"], again["points"]), (0, 4, 0))
+        self.assertEqual(self.pts(10, "reach"), 3000)
+        self.assertEqual(sum(r["pts"] for r in self.s.lane_totals("0", "9")), first["points"])
+
+    def test_a_later_import_is_stamped_in_the_cycle_it_runs_in(self):
+        res = self.e.import_legacy_xp(dt(2026, 10, 20))
+        self.assertEqual(res["stamp"], "2026-10-19 00:00:00")
+        self.assertEqual(self.pts(11, "reach", *self.e.cycle_range(1)), 860)
+        self.assertEqual(self.pts(11, "reach", *self.e.cycle_range(0)), 0)
+
+    def test_excluded_members_are_skipped(self):
+        self.s.exclude(11, "test")
+        res = self.e.import_legacy_xp(dt(2026, 10, 6))
+        self.assertEqual((res["imported"], res["excluded"]), (3, 1))
+        self.assertEqual(self.pts(11), 0)
+
+    def test_the_old_table_is_left_exactly_as_it_was(self):
+        before = self.old_rows()
+        self.e.import_legacy_xp(dt(2026, 10, 6))
+        self.assertEqual(self.old_rows(), before)
+
+    def test_imported_xp_shows_on_leaderboards_and_in_the_cycle_review_as_reach_only(self):
+        self.e.import_legacy_xp(dt(2026, 10, 6))
+        board = self.e.leaderboard("reach", "cycle", dt(2026, 10, 6), hide=lambda u: u == 10)
+        self.assertEqual([(r, u, p) for r, u, p in board], [(1, 11, 860), (2, 12, 535), (3, 13, 10)])
+        self.assertEqual(self.e.leaderboard("builder", "cycle", dt(2026, 10, 6)), [])
+        review = self.e.cycle_review(dt(2026, 10, 6), hide=lambda u: u == 10)
+        self.assertEqual(review["selected"], [])                                  # Reach alone is not enough
+        self.assertEqual(sorted(x["user_id"] for x in review["near_misses"]), [11, 12])   # one lane met
+        self.assertTrue(all(x["missing"] == "builder" for x in review["near_misses"]))
+        self.assertEqual(review["top_reach"]["user_id"], 11)
+
+    def test_imported_xp_does_not_use_up_daily_caps_or_trigger_bonuses(self):
+        self.e.import_legacy_xp(dt(2026, 10, 5, 12))
+        res = self.approve(self.post(11, "reach", dt(2026, 10, 5, 13), url="x.com/a/status/1"), "official_engage")
+        self.assertEqual((res.awards[0].points, res.bonuses), (10, []))
+
+    def test_a_member_who_then_earns_builder_xp_qualifies(self):
+        self.e.import_legacy_xp(dt(2026, 10, 6))
+        self.approve(self.post(11, "tutorial", dt(2026, 10, 7), url="example.com/t"), "tutorial_exceptional")  # +100 builder
+        review = self.e.cycle_review(dt(2026, 10, 8), hide=lambda u: u == 10)
+        self.assertEqual([x["user_id"] for x in review["selected"]], [11])
+        self.assertEqual((review["selected"][0]["reach"], review["selected"][0]["builder"]), (860, 100))
+
+
 class TestConfigData(unittest.TestCase):
     def test_catalogue_matches_the_brief(self):
         c = pc.CATEGORIES

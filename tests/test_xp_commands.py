@@ -294,6 +294,37 @@ class TestCycleReviewCommand(CommandCase):
         self.assertEqual(self.guild.get_channel(BUILD).send.await_count, 0)  # nothing public
 
 
+class TestLegacyStartup(CommandCase):
+    SUMMARY = {"imported": 13, "points": 5580, "already": 0, "excluded": 0, "stamp": "2026-10-05 00:00:00"}
+
+    async def test_import_runs_once_then_sets_the_done_flag(self):
+        xp_cog.db.kv_get.return_value = None
+        engine = mock.MagicMock()
+        engine.import_legacy_xp.return_value = dict(self.SUMMARY)
+        self.assertEqual(xp_cog.run_legacy_import(engine)["points"], 5580)
+        engine.import_legacy_xp.assert_called_once()
+        xp_cog.db.kv_set.assert_called_once_with(xp_cog.LEGACY_FLAG, "1")
+
+    async def test_nothing_happens_once_the_flag_is_set(self):
+        xp_cog.db.kv_get.return_value = "1"
+        engine = mock.MagicMock()
+        self.assertIsNone(xp_cog.run_legacy_import(engine))
+        engine.import_legacy_xp.assert_not_called()
+        xp_cog.db.kv_set.assert_not_called()
+
+    async def test_a_failed_import_never_stops_startup_and_is_retried_next_time(self):
+        xp_cog.db.kv_get.return_value = None
+        engine = mock.MagicMock()
+        engine.import_legacy_xp.side_effect = RuntimeError("table missing")
+        self.assertIsNone(xp_cog.run_legacy_import(engine))  # must not raise
+        xp_cog.db.kv_set.assert_not_called()                 # flag stays unset, so the next start retries
+
+    async def test_the_founder_is_hidden_from_leaderboards(self):
+        hide = self.cog.hide_fn(self.guild)
+        self.assertTrue(hide(config.FOUNDER_ID))
+        self.assertFalse(hide(7))
+
+
 class TestIntakeGuards(CommandCase):
     async def test_intake_stays_silent_in_ignored_announcement_and_ticket_channels(self):
         msg = proof_message(900, member(7), BUILD, "no proof here")

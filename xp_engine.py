@@ -577,6 +577,29 @@ class Engine:
                 out.append(a)
         return out
 
+    # ---- legacy import ---------------------------------------------------
+    def import_legacy_xp(self, now):
+        """Copy the old single XP balances into the ledger as Reach XP, once per member.
+        Stamped at the start of the current cycle. Idempotent (unique award_key per member),
+        skips excluded members, and never touches the old table."""
+        cfg = pc.LEGACY_IMPORT
+        stamp = self.cycle_range(self.cycle_of(now))[0]
+        out = {"imported": 0, "already": 0, "excluded": 0, "points": 0, "stamp": stamp}
+        for r in self.store.legacy_xp_rows():
+            if self.store.is_excluded(r["user_id"]):
+                out["excluded"] += 1
+                continue
+            row_id = self._insert(
+                guild_id=r["guild_id"], user_id=r["user_id"], lane=cfg["lane"], category=cfg["category"],
+                points=int(r["xp"]), reason=cfg["reason"], submission_id=None,
+                award_key=f"legacy:{r['guild_id']}:{r['user_id']}", awarded_by=None, created_at=stamp)
+            if row_id is None:
+                out["already"] += 1
+            else:
+                out["imported"] += 1
+                out["points"] += int(r["xp"])
+        return out
+
     # ---- referrals -------------------------------------------------------
     def register_referral(self, guild_id, invitee_id, inviter_id, joined_at, account_created_at, now):
         """Attribute an invitee to an inviter. First attribution wins. Returns a dict with
