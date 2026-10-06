@@ -80,6 +80,9 @@ Elites can earn and are shown, tagged "(Elite)" next to their name. The founder,
 ### The ledger
 `xp_ledger` is the source of truth and leaderboards are `SUM` queries over it. Every award has a unique `award_key` (for example `{submission_id}:{category}`), so a double click, a retry or a restart can never pay twice. Daily caps (official engagement 30 points per UTC day; 3 counted own posts per UTC day), once-per-link rules, weekly streak bonuses (5 distinct UTC days: own posts +30 Reach, Academy +20 Builder), referrals, learn together and the weekly challenge are all in `xp_engine.py`. No LLM is used to score or review.
 
+### Points cap (for now)
+Each member's points are capped at `POINTS_CAP` (default **100**) **per lane, all-time**. An award that would take someone past it is trimmed to what fits ("trimmed to the 100 point cap"), and at the cap it pays 0 ("points cap reached"); this covers reviewed proof, Like/Retweet/Comment claims, bonuses, referral payouts and `/award`. Staff corrections with `/xpadjust` and the one-off import are not capped. Because it is the all-time balance, it holds across cycles. The leaderboards and `/xp` say so. Set `POINTS_CAP=0` to remove it.
+
 ### Editing the numbers
 All point values, caps, bonuses and referral/challenge rules live in `points_config.py` (data only, no logic). Edit a number there and redeploy. Elite thresholds, slots, cycle length and windows are environment variables (table below).
 
@@ -192,6 +195,7 @@ Then point `SUPABASE_DB_*` (below) at that project and role. `database.py`'s `in
 | POINTS_TZ | No | UTC (points always run on UTC; any other value is only warned about) |
 | CYCLE_START_DATE | No | 2026-10-05 (YYYY-MM-DD, read as 00:00:00 UTC; set your first cycle date) |
 | CYCLE_LENGTH_DAYS | No | 14 |
+| POINTS_CAP | No | 100 (a ceiling on each member's points per lane, all-time; 0 turns it off) |
 | ELITE_MIN_REACH | No | 100 |
 | ELITE_MIN_BUILDER | No | 100 |
 | ELITE_SLOTS_PER_CYCLE | No | 5 |

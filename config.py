@@ -168,6 +168,11 @@ ELITE_MIN_REACH       = _int("ELITE_MIN_REACH", 100)
 ELITE_MIN_BUILDER     = _int("ELITE_MIN_BUILDER", 100)
 ELITE_SLOTS_PER_CYCLE = max(0, _int("ELITE_SLOTS_PER_CYCLE", 5))
 
+# Permanent (for now) ceiling on each member's points, per lane, all-time. An award that would
+# take someone past it is trimmed to what fits, and at the ceiling it pays 0. 0 turns it off.
+# Staff corrections (/xpadjust) and the one-off import are not capped.
+POINTS_CAP = max(0, _int("POINTS_CAP", 100))
+
 # Reach proof timing and account checks
 OFFICIAL_POST_WINDOW_MINUTES = max(1, _int("OFFICIAL_POST_WINDOW_MINUTES", 120))
 MIN_ACCOUNT_AGE_DAYS         = max(0, _int("MIN_ACCOUNT_AGE_DAYS", 7))

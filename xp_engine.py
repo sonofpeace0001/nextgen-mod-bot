@@ -105,6 +105,7 @@ class Rules:
     elite_min_reach: int = 100
     elite_min_builder: int = 100
     elite_slots: int = 5
+    points_cap: int = 0   # 0 = no ceiling
     channel_ids: dict = field(default_factory=dict)  # channel key -> channel id
     warnings: list = field(default_factory=list)
 
@@ -126,6 +127,7 @@ class Rules:
             elite_min_reach=cfg.ELITE_MIN_REACH,
             elite_min_builder=cfg.ELITE_MIN_BUILDER,
             elite_slots=cfg.ELITE_SLOTS_PER_CYCLE,
+            points_cap=cfg.POINTS_CAP,
             channel_ids=dict(cfg.PROOF_CHANNELS),
             warnings=warnings,
         )
@@ -366,6 +368,20 @@ class Engine:
             reason=reason, submission_id=submission_id, award_key=award_key,
             awarded_by=awarded_by, created_at=created_at)
 
+    def _insert_capped(self, *, points, reason, **kw):
+        """Insert an award, trimmed so the member's balance in that lane never passes points_cap.
+        Returns (row_id, points_applied, cap_note). Staff corrections and the import use _insert
+        directly and are not capped."""
+        note = ""
+        cap = self.rules.points_cap
+        if cap and points > 0:
+            room = max(0, cap - self.store.lane_balance(kw["user_id"], kw["lane"]))
+            if room < points:
+                note = "points cap reached" if room == 0 else f"trimmed to the {cap} point cap"
+                points = room
+        reason = "; ".join(x for x in (reason, note) if x)
+        return self._insert(points=points, reason=reason, **kw), points, note
+
     def _apply_caps(self, user_id, category, points, created_ts):
         """Daily caps by UTC day of the event. Points over the cap are not awarded."""
         day_start, day_end = day_bounds(parse_ts(created_ts))
@@ -421,12 +437,14 @@ class Engine:
                 points, note = self._apply_caps(uid, category, points, created)
                 if note:
                     notes.append(note)
-        row_id = self._insert(
+        row_id, points, cap_note = self._insert_capped(
             guild_id=sub["guild_id"], user_id=uid, lane=cat["lane"], category=category, points=points,
             reason="; ".join(notes), submission_id=sub["id"], award_key=f"{sub['id']}:{category}",
             awarded_by=reviewer_id, created_at=created)
         if row_id is None:
             return Award(category, cat["lane"], 0, base, ["already awarded"], uid, inserted=False)
+        if cap_note:
+            notes.append(cap_note)
         return Award(category, cat["lane"], points, base, notes, uid)
 
     # ---- review actions --------------------------------------------------
@@ -493,13 +511,13 @@ class Engine:
         return out
 
     def _bonus(self, *, sub_or_none, guild_id, user_id, lane, category, points, reason, key, created_at, by=None):
-        row_id = self._insert(
+        row_id, applied, cap_note = self._insert_capped(
             guild_id=guild_id, user_id=user_id, lane=lane, category=category, points=points,
             reason=reason, submission_id=(sub_or_none["id"] if sub_or_none else None),
             award_key=key, awarded_by=by, created_at=created_at)
         if row_id is None:
             return None
-        return Award(category, lane, points, points, [reason] if reason else [], user_id)
+        return Award(category, lane, applied, points, [x for x in (reason, cap_note) if x], user_id)
 
     def _streak(self, key, rule, sub, created_dt):
         uid = sub["user_id"]
@@ -649,12 +667,14 @@ class Engine:
             points, note = self._apply_caps(uid, category, points, claim["created_at"])
             if note:
                 notes.append(note)
-        row_id = self._insert(
+        row_id, points, cap_note = self._insert_capped(
             guild_id=claim["guild_id"], user_id=uid, lane=cat["lane"],
             category=category, points=points, reason="; ".join(notes), submission_id=None,
             award_key=f"claim:{claim['id']}", awarded_by=reviewer_id, created_at=claim["created_at"])
         if row_id is None:
             return Award(category, cat["lane"], 0, base, ["already awarded"], uid, inserted=False)
+        if cap_note:
+            notes.append(cap_note)
         return Award(category, cat["lane"], points, base, notes, uid)
 
     # ---- legacy import ---------------------------------------------------
@@ -815,16 +835,18 @@ class Engine:
 
     # ---- manual awards ---------------------------------------------------
     def award_manual(self, guild_id, user_id, category, reason, awarded_by, now, key):
-        """Staff award (events and manual). Bypasses caps; still skips excluded members."""
+        """Staff award (events and manual). Bypasses the daily caps, but not the points cap; still
+        skips excluded members."""
         cat = pc.CATEGORIES[category]
         if self.store.is_excluded(user_id):
             return Award(category, cat["lane"], 0, cat["points"], ["member is excluded from points"], user_id)
-        row = self._insert(guild_id=guild_id, user_id=user_id, lane=cat["lane"], category=category,
-                           points=cat["points"], reason=reason, submission_id=None,
-                           award_key=f"award:{key}", awarded_by=awarded_by, created_at=ts(now))
+        row, applied, cap_note = self._insert_capped(
+            guild_id=guild_id, user_id=user_id, lane=cat["lane"], category=category,
+            points=cat["points"], reason=reason, submission_id=None,
+            award_key=f"award:{key}", awarded_by=awarded_by, created_at=ts(now))
         if row is None:
             return Award(category, cat["lane"], 0, cat["points"], ["already awarded"], user_id, inserted=False)
-        return Award(category, cat["lane"], cat["points"], cat["points"], [reason] if reason else [], user_id)
+        return Award(category, cat["lane"], applied, cat["points"], [x for x in (reason, cap_note) if x], user_id)
 
     def adjust(self, guild_id, user_id, lane, points, reason, awarded_by, now, key):
         row = self._insert(guild_id=guild_id, user_id=user_id, lane=lane, category="adjustment",

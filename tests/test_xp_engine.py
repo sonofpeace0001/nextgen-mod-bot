@@ -830,6 +830,106 @@ class TestHalveAndCapCorrection(Base):
         self.assertEqual((corr["factor_num"], corr["factor_den"], corr["cap"]), (1, 2, 100))
 
 
+class TestPointsCap(Base):
+    """A permanent (for now) ceiling of 100 per member per lane."""
+
+    def setUp(self):
+        super().setUp()
+        self.e.rules.points_cap = 100
+
+    def seed(self, user, lane, points, key=None):
+        self.s.insert_award(guild_id=1, user_id=user, lane=lane, category="adjustment", points=points, reason="",
+                            submission_id=None, award_key=key or f"seed:{user}:{lane}", awarded_by=None,
+                            created_at="2026-10-05 00:00:00")
+
+    def test_an_award_that_would_pass_the_cap_is_trimmed_to_what_fits(self):
+        self.seed(7, "builder", 90)
+        a = self.approve(self.post(7, "build", MON), "build_demo").awards[0]       # worth 20
+        self.assertEqual(a.points, 10)
+        self.assertIn("trimmed to the 100 point cap", a.notes)
+        self.assertEqual(self.pts(7, "builder"), 100)
+
+    def test_at_the_cap_an_award_pays_nothing_and_says_so(self):
+        self.seed(7, "builder", 100)
+        a = self.approve(self.post(7, "build", MON), "build_project").awards[0]
+        self.assertEqual(a.points, 0)
+        self.assertIn("points cap reached", a.notes)
+        self.assertEqual(self.pts(7, "builder"), 100)
+        self.assertEqual(self.s.get_award(f"{a_sid(self)}:build_project")["points"], 0)   # the zero row is on record
+
+    def test_the_cap_is_per_lane(self):
+        self.seed(7, "builder", 100)
+        a = self.approve(self.post(7, "reach", MON, url="x.com/a/status/1"), "post_original").awards[0]
+        self.assertEqual((a.points, self.pts(7, "builder"), self.pts(7, "reach")), (25, 100, 25))
+
+    def test_it_holds_across_cycles_because_it_is_the_all_time_balance(self):
+        self.seed(7, "builder", 100)
+        later = dt(2026, 10, 25)                       # cycle 1
+        a = self.approve(self.post(7, "build", later), "build_share", now=later).awards[0]
+        self.assertEqual(a.points, 0)
+
+    def test_engagement_claims_are_capped_too(self):
+        self.seed(7, "reach", 99)
+        pid, _ = self.e.open_official_post("https://x.com/G_NEXTGEN/status/1", MON)
+        _, cid = self.e.claim_engagement(1, pid, 7, "comment", "h", "", MON)
+        a = self.e.approve_claim(cid, REVIEWER, MON).awards[0]
+        self.assertEqual((a.points, self.pts(7, "reach")), (1, 100))
+
+    def test_bonuses_and_referral_payouts_are_capped_too(self):
+        self.seed(100, "reach", 98)
+        r = self.e.register_referral(1, 200, 100, MON, dt(2025, 1, 1), MON)           # referral_join pays 5
+        self.assertEqual((r["award"].points, self.pts(100, "reach")), (2, 100))
+        self.seed(8, "reach", 90)
+        bonus = self.e._bonus(sub_or_none=None, guild_id=1, user_id=8, lane="reach", category="streak_posts", points=30,
+                              reason="streak", key="streak:test", created_at=xe.ts(MON))
+        self.assertEqual((bonus.points, bonus.base, self.pts(8, "reach")), (10, 30, 100))
+        self.assertIn("trimmed to the 100 point cap", bonus.notes)
+
+    def test_staff_awards_are_capped_but_staff_adjustments_are_not(self):
+        self.seed(9, "builder", 95)
+        a = self.e.award_manual(1, 9, "event_facilitate", "ran a space", REVIEWER, MON, key="k")   # worth 25
+        self.assertEqual(a.points, 5)
+        self.assertTrue(self.e.adjust(1, 9, "builder", 50, "owner decision", REVIEWER, MON, key="adj"))
+        self.assertEqual(self.pts(9, "builder"), 150)                                   # an explicit correction wins
+        self.assertTrue(self.e.adjust(1, 9, "builder", -60, "fix", REVIEWER, MON, key="adj2"))
+        self.assertEqual(self.pts(9, "builder"), 90)
+
+    def test_points_can_be_earned_again_after_a_correction_lowers_a_balance(self):
+        self.seed(10, "builder", 100)
+        self.e.adjust(1, 10, "builder", -40, "fix", REVIEWER, MON, key="adj")
+        a = self.approve(self.post(10, "build", MON), "build_demo").awards[0]
+        self.assertEqual((a.points, self.pts(10, "builder")), (20, 80))
+
+    def test_a_cap_of_zero_turns_it_off(self):
+        self.e.rules.points_cap = 0
+        self.seed(11, "builder", 500)
+        self.assertEqual(self.approve(self.post(11, "build", MON), "build_project").awards[0].points, 30)
+
+    def test_the_import_and_the_one_off_correction_are_not_capped(self):
+        self.s._exec("CREATE TABLE member_xp (user_id BIGINT, guild_id BIGINT, xp INTEGER, PRIMARY KEY (user_id, guild_id))")
+        self.s._exec("INSERT INTO member_xp (user_id, guild_id, xp) VALUES (%s,%s,%s)", (12, 1, 1500))
+        self.e.import_legacy_xp(dt(2026, 10, 6))
+        self.assertEqual((self.pts(12, "builder"), self.pts(12, "reach")), (750, 750))
+        self.e.apply_correction(pc.CORRECTIONS[0], dt(2026, 10, 6, 14))
+        self.assertEqual((self.pts(12, "builder"), self.pts(12, "reach")), (100, 100))
+
+    def test_the_daily_caps_and_the_points_cap_work_together(self):
+        self.seed(13, "reach", 90)
+        self.approve(self.post(13, "reach", MON, url="x.com/a/status/1"), "official_engage")   # +10, now 100
+        a = self.approve(self.post(13, "reach", MON, url="x.com/a/status/2"), "official_engage").awards[0]
+        self.assertEqual(a.points, 0)
+
+    def test_the_default_setting_is_100(self):
+        import config
+        self.assertEqual(xe.Rules.from_config(config).points_cap, config.POINTS_CAP)
+        self.assertEqual(config.POINTS_CAP, 100)
+
+
+def a_sid(case):
+    """The id of the most recent submission."""
+    return case.s._one("SELECT MAX(id) AS n FROM submissions")["n"]
+
+
 class TestEngagementClaims(Base):
     def setUp(self):
         super().setUp()

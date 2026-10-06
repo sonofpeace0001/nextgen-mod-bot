@@ -396,9 +396,10 @@ class XPCog(commands.Cog):
         if not config.ELITE_ROLE_ID:
             log.warning("ELITE_ROLE_ID is not set: 'above Elite' falls back to the immune roles, Elites are hidden from "
                         "leaderboards, and the legacy XP import is waiting.")
-        log.info("Points ready. Proof channels: %s. Cycle %s (starts %s, %s days).",
+        log.info("Points ready. Proof channels: %s. Cycle %s (starts %s, %s days). Points cap: %s per lane.",
                  config.PROOF_CHANNELS, self.engine.cycle_of(now_utc()),
-                 self.engine.rules.cycle_start, self.engine.rules.cycle_length)
+                 self.engine.rules.cycle_start, self.engine.rules.cycle_length,
+                 self.engine.rules.points_cap or "none")
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -917,7 +918,8 @@ class XPCog(commands.Cog):
         if alltime:
             e.add_field(name="All time", value="\n".join(
                 f"{r}. {self._who(guild, u)} -- {p} XP" for r, u, p in alltime), inline=False)
-        e.set_footer(text="Updates automatically")
+        cap = self.engine.rules.points_cap
+        e.set_footer(text="Updates automatically" + (f". Points are capped at {cap} per lane for now." if cap else ""))
         e.timestamp = now
         return e
 
@@ -1120,6 +1122,8 @@ class XPCog(commands.Cog):
             rank = f"rank {s[lane + '_rank']}" if s[lane + "_rank"] else "unranked"
             e.add_field(name=f"{LANE_TITLES[lane]} XP",
                         value=f"{s[lane]} of {need} needed ({rank})\nAll time: {s[lane + '_alltime']}", inline=True)
+        if self.engine.rules.points_cap:
+            e.set_footer(text=f"Points are capped at {self.engine.rules.points_cap} per lane for now.")
         await i.response.send_message(embed=e, ephemeral=True)
 
     PERIOD_CHOICES = [app_commands.Choice(name="This cycle", value="cycle"),

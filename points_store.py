@@ -240,6 +240,11 @@ class Store:
             params += list(channel_ids)
         return int(self._one(sql, params)["n"])
 
+    def lane_balance(self, user_id, lane):
+        r = self._one(f"SELECT COALESCE(SUM(points),0) AS pts FROM {self.p}xp_ledger WHERE user_id=%s AND lane=%s",
+                      (user_id, lane))
+        return int(r["pts"])
+
     def lane_balances(self):
         """Everyone's all-time balance per lane, straight from the ledger."""
         rows = self._all(
