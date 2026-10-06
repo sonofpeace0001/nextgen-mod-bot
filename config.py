@@ -112,32 +112,36 @@ def _id_set(name):
     return out
 
 
-# Proof channels. REACH and ACADEMY used to share one channel (1492637188817682442);
-# the owner sets both. A channel left at 0 is simply not a proof channel.
+# Proof channels. A channel left at 0 is simply not a proof channel. There is no Academy
+# channel any more: the Academy lesson code is still in the engine but nothing switches it on.
+#   reach          X links: member posts about NEXTGEN, and the official post cards (/xpost)
+#   build          task proof submissions (any post: link, screenshot or text)
+#   tutorial, prompt_result    link or attachment, reviewed the same way as build
 REACH_CHANNEL_ID         = _int("REACH_CHANNEL_ID", 0)
-ACADEMY_CHANNEL_ID       = _int("ACADEMY_CHANNEL_ID", 0)
 BUILD_CHANNEL_ID         = _int("BUILD_CHANNEL_ID", 1529120140711432344)
 TUTORIAL_CHANNEL_ID      = _int("TUTORIAL_CHANNEL_ID", 1520157303054139492)
 PROMPT_RESULT_CHANNEL_ID = _int("PROMPT_RESULT_CHANNEL_ID", 1492637326541590790)
 CHALLENGE_CHANNEL_ID     = _int("CHALLENGE_CHANNEL_ID", 0)
-# Review cards go here. Falls back to STAFF_CHANNEL_ID, then LOG_CHANNEL_ID (same chain
-# the welcome-reply forwarding uses) so a card is never silently dropped.
-STAFF_REVIEW_CHANNEL_ID  = _int("STAFF_REVIEW_CHANNEL_ID", 0) or STAFF_CHANNEL_ID or LOG_CHANNEL_ID
 
-# Two live leaderboards, one message each, edited in place as points change:
-#   BUILD_LEADERBOARD_CHANNEL_ID -> Builder XP     REACH_LEADERBOARD_CHANNEL_ID -> engaging on posts (Reach XP)
-BUILD_LEADERBOARD_CHANNEL_ID = _int("BUILD_LEADERBOARD_CHANNEL_ID", 0)
-REACH_LEADERBOARD_CHANNEL_ID = _int("REACH_LEADERBOARD_CHANNEL_ID", 0)
+# Reviews (Reach proof cards, engagement claims, spam alerts) go to the LOG channel unless
+# STAFF_REVIEW_CHANNEL_ID says otherwise.
+STAFF_REVIEW_CHANNEL_ID  = _int("STAFF_REVIEW_CHANNEL_ID", 0) or LOG_CHANNEL_ID
+
+# ONE leaderboard channel. The bot keeps two live messages in it (Build and Reach, edited in
+# place), and the leaderboard commands only work in it for everyone without a role above Elite.
+# LEADERBOARD_COMMAND_CHANNEL_ID can name a different channel for the commands; it defaults
+# to LEADERBOARD_CHANNEL_ID. Both 0 = no live boards and no restriction.
+LEADERBOARD_CHANNEL_ID         = _int("LEADERBOARD_CHANNEL_ID", 0)
+LEADERBOARD_COMMAND_CHANNEL_ID = _int("LEADERBOARD_COMMAND_CHANNEL_ID", 0) or LEADERBOARD_CHANNEL_ID
 
 # Proof channels whose review buttons (category menu, Approve, Decline) are put on the bot's
-# reply right in the channel. Anything not listed here sends its review card to the staff channel.
+# reply right in the channel. Anything not listed here sends its review card to the review channel.
 REVIEW_IN_CHANNEL_KEYS = {k.strip() for k in os.getenv(
-    "REVIEW_IN_CHANNEL_KEYS", "academy,build,tutorial,prompt_result").split(",") if k.strip()}
+    "REVIEW_IN_CHANNEL_KEYS", "build,tutorial,prompt_result").split(",") if k.strip()}
 
 # channel key (see points_config.CHANNEL_LANES) -> channel id, only for channels that are set
 PROOF_CHANNELS = {k: v for k, v in {
     "reach": REACH_CHANNEL_ID,
-    "academy": ACADEMY_CHANNEL_ID,
     "build": BUILD_CHANNEL_ID,
     "tutorial": TUTORIAL_CHANNEL_ID,
     "prompt_result": PROMPT_RESULT_CHANNEL_ID,
@@ -168,15 +172,14 @@ ELITE_SLOTS_PER_CYCLE = max(0, _int("ELITE_SLOTS_PER_CYCLE", 5))
 OFFICIAL_POST_WINDOW_MINUTES = max(1, _int("OFFICIAL_POST_WINDOW_MINUTES", 120))
 MIN_ACCOUNT_AGE_DAYS         = max(0, _int("MIN_ACCOUNT_AGE_DAYS", 7))
 
-# /xpost announcements ping XP_PING_ROLE_ID (defaults to MEMBER_ROLE_ID) and post in
-# XP_ANNOUNCE_CHANNEL_ID (falls back to the channel the command was run in).
-XP_PING_ROLE_ID        = int(os.getenv("XP_PING_ROLE_ID", "0")) or MEMBER_ROLE_ID
-XP_ANNOUNCE_CHANNEL_ID = int(os.getenv("XP_ANNOUNCE_CHANNEL_ID", "0"))
+# /xpost posts its engagement card in the Reach channel (the channel it was run in if that is
+# not set) and pings XP_PING_ROLE_ID (defaults to MEMBER_ROLE_ID).
+XP_PING_ROLE_ID = int(os.getenv("XP_PING_ROLE_ID", "0")) or MEMBER_ROLE_ID
 
-# Daily leaderboard post to XP_ANNOUNCE_CHANNEL_ID, at this hour in UTC (was 09:00 Lagos,
-# which is 08:00 UTC, so the default moved to 8 to keep the same time of day).
+# The live leaderboards are refreshed every day at this hour in UTC, so they roll over to the
+# new cycle at midnight (and they update within seconds of any approval).
 XP_LEADERBOARD_ENABLED = os.getenv("XP_LEADERBOARD_ENABLED", "true").lower() == "true"
-XP_LEADERBOARD_HOUR = min(23, max(0, _int("XP_LEADERBOARD_HOUR", 8)))
+XP_LEADERBOARD_HOUR = min(23, max(0, _int("XP_LEADERBOARD_HOUR", 0)))
 
 # Ticket channel detection
 TICKET_KEYWORDS        = os.getenv("TICKET_KEYWORDS", "ticket,support,help-desk").split(",")

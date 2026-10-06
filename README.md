@@ -11,7 +11,7 @@ Autonomous Discord moderation bot with AI-powered chat (Groq/GPT-OSS 120B), auto
 - Member reports with mod action buttons
 - Reaction roles
 - Mod notes on user profiles
-- Slash commands: /warn /mute /unmute /purge /warnings /clearwarnings /modlog /slowmode /lookup /note /reactionrole /report /guide /announce /ignore /unignore /ignoredchannels, plus the points commands: /xp /xpleaderboard /referrals /invitedby /xpost /officialpost /award /xpadjust /xpexclude /xpinclude /referralclear /challenge /cycle
+- Slash commands: /warn /mute /unmute /purge /warnings /clearwarnings /modlog /slowmode /lookup /note /reactionrole /report /guide /announce /ignore /unignore /ignoredchannels, plus the points commands: /xp /buildleaderboard /reachleaderboard /referrals /invitedby /xpost /officialpost /award /xpadjust /xpexclude /xpinclude /referralclear /challenge /cycle
 - **/announce**: post an announcement as a Discord embed card (mod-only); defaults to the announcements channel, optional @everyone ping
 - **Points (Reach XP and Builder XP)**: members post proof in dedicated channels, a human reviewer checks it and awards points, and points are counted in 14-day cycles to pick the next Elites. Scoring is deterministic, no LLM involved. See [Points](#points-reach-xp-and-builder-xp) below. Everything runs on UTC.
 - **Tag-to-teach**: @mention the bot anywhere and it answers as a senior prompt engineer / AI mentor — questions, explanations, and ready-to-paste prompts
@@ -38,37 +38,44 @@ Referral tracking reads the server's invite list, which needs the **Manage Serve
 ## Points (Reach XP and Builder XP)
 Two separate lanes, each from proof posted in its own channels:
 - **Reach XP**: growing NEXTGEN (official post engagement, posting about NEXTGEN on X, referrals).
-- **Builder XP**: learning and building (Academy, projects, tutorials, prompt results, events, helping others).
+- **Builder XP**: learning and building (task proof, projects, tutorials, prompt results, events, helping others).
 
 **Time is UTC everywhere.** A day runs 00:00:00 to 23:59:59 UTC and daily caps reset at 00:00 UTC. A week runs Monday 00:00:00 UTC to Sunday 23:59:59 UTC. Cycle number is `floor((UTC date - CYCLE_START_DATE) / CYCLE_LENGTH_DAYS)`, so a cycle rolls over at 00:00:00 UTC. All timestamps are stored in UTC, and a ledger row is stamped with the time the proof was posted (not when a reviewer got to it), so a Sunday 23:59 proof approved on Monday still counts for the week and cycle it was posted in. `POINTS_TZ` exists only so a non-UTC value can be flagged at startup; it is never used for any calculation.
 
-### Channel to lane map
-| Channel (env var) | Lane |
-|---|---|
-| `REACH_CHANNEL_ID` | Reach |
-| `ACADEMY_CHANNEL_ID`, `BUILD_CHANNEL_ID`, `TUTORIAL_CHANNEL_ID`, `PROMPT_RESULT_CHANNEL_ID` | Builder |
+### Channels
+| Channel (env var) | Used for | Lane |
+|---|---|---|
+| `REACH_CHANNEL_ID` | `/xpost` cards, official links from roles above Elite, members' own X posts as proof | Reach |
+| `BUILD_CHANNEL_ID` | Task proof submissions (any post) | Builder |
+| `TUTORIAL_CHANNEL_ID`, `PROMPT_RESULT_CHANNEL_ID` | Tutorial and prompt result proof | Builder |
+| `LEADERBOARD_CHANNEL_ID` | The two live leaderboards, and the only place the leaderboard commands work for everyone without a role above Elite | none |
+| `LOG_CHANNEL_ID` | Review: Reach proof cards, engagement claims, spam alerts (override with `STAFF_REVIEW_CHANNEL_ID`) | none |
 
-`REACH_CHANNEL_ID` and `ACADEMY_CHANNEL_ID` used to be one shared channel (`1492637188817682442`); set both. A channel left unset is simply not a proof channel. The chat, tutor and prompt helper never reply in any proof channel. If a proof channel is also in the ignored, announcement or ticket lists the bot logs a warning at startup.
+**There is no Academy channel any more.** The Academy lesson code (Day N posts, referral "first lesson" payout, learn-together, Academy streak) is still in the engine but nothing switches it on, so those bonuses can no longer be earned. A channel left unset is simply not a proof channel. The chat, tutor and prompt helper never reply in any proof channel. If a proof channel is also in the ignored, announcement or ticket lists the bot logs a warning at startup and stays silent there.
 
 ### How proof and review work
-1. **Builder channels** (Build, Tutorial, Prompt result) take whatever a member posts: a link, a screenshot, or just text such as "task completed". A text-only post shorter than 8 characters is treated as chatter and ignored. **Academy** posts still need a link or attachment and `Day N`; a post covering several days (`day 1-2`, `days 1, 2`, `day 1 and 2`) is rejected and earns nothing, and a post that links to a Discord message is a helping submission (no day needed). **Reach** needs an `x.com` or `twitter.com` link containing `/status/`.
+1. **Builder channels** (Build, Tutorial, Prompt result) take whatever a member posts: a link, a screenshot, or just text such as "task completed". A text-only post shorter than 8 characters is treated as chatter and ignored. **Reach** needs an `x.com` or `twitter.com` link containing `/status/`.
 2. Duplicate links (query strings ignored) and duplicate images (SHA-256, up to 8 MB) are rejected across all members. One exception: in Reach a member may resubmit their own already approved post link to claim a likes milestone, and the engine still pays each category once per link.
-3. **Review buttons appear automatically, no command needed.** For the channels in `REVIEW_IN_CHANNEL_KEYS` (default: academy, build, tutorial, prompt_result) the bot replies right under the member's post with "Received" and a category menu plus **Approve**, **Decline** (optional reason) and **Zero points (spam)** buttons. When a moderator decides, that same message is edited to show the outcome ("Approved. +20 builder XP for build demo."). Anything not in that list (Reach proof) sends its review card to `STAFF_REVIEW_CHANNEL_ID` instead (falls back to `STAFF_CHANNEL_ID`, then `LOG_CHANNEL_ID`). Flags such as a new account or a match with earlier rejected proof are sent to the staff channel, never shown publicly.
+3. **Review buttons appear automatically, no command needed.** For the channels in `REVIEW_IN_CHANNEL_KEYS` (default: build, tutorial, prompt_result) the bot replies right under the member's post with "Received" and a category menu plus **Approve**, **Decline** (optional reason) and **Zero points (spam)** buttons. When a moderator decides, that same message is edited to show the outcome ("Approved. +20 builder XP for build demo."). Anything not in that list (Reach proof) sends its review card to `STAFF_REVIEW_CHANNEL_ID` instead (falls back to `STAFF_CHANNEL_ID`, then `LOG_CHANNEL_ID`). Flags such as a new account or a match with earlier rejected proof are sent to the staff channel, never shown publicly.
 4. **Only moderators with a role above Elite can use the buttons.** That means anyone whose highest role sits above the `ELITE_ROLE_ID` role in the server's role list, plus the founder, Administrators and any role in `STAFF_ROLE_IDS`. Elites cannot approve. `REVIEWER_ROLE_IDS` adds extra reviewer roles. Nobody can review their own submission or one from a member they invited. Everyone else who presses a button gets a private "only moderators with a role above Elite" message.
 5. **Zero points (spam)** writes a 0-point row, adds a strike, and alerts staff at 3 strikes.
 6. Buttons are persistent and re-registered at startup, so cards keep working after a restart. Deleting a pending proof withdraws it and removes its card; an approved award stays unless staff remove it with `/xpadjust`.
 
 ### Official post cards (Like, Retweet, Comment)
-When someone with a role above Elite drops an X link (`.../status/...`) in the Reach channel, the bot posts a card in its place and deletes the original (needs Manage Messages; if it cannot, the link stays). The link is kept in the card's message text, so Discord still shows the post's own preview. The card pings `XP_PING_ROLE_ID` and has three buttons, each worth Reach XP (edit in `points_config.py`): **Like +2, Retweet +3, Comment +5**. `/xpost` posts the same card to `XP_ANNOUNCE_CHANNEL_ID`.
+When someone with a role above Elite drops an X link (`.../status/...`) in the Reach channel, the bot posts a card in its place and deletes the original (needs Manage Messages; if it cannot, the link stays). The link is kept in the card's message text, so Discord still shows the post's own preview. The card pings `XP_PING_ROLE_ID` and has three buttons, each worth Reach XP (edit in `points_config.py`): **Like +2, Retweet +3, Comment +5**. `/xpost` always posts the same card in the Reach channel, wherever it is run.
 
 A member does it on X first, then presses the button for each thing they did:
 1. The first time, a short form asks for their X username (and an optional link to their reply). It is remembered, so later claims are one click. `/xphandle` changes it.
-2. They see "Verification in progress" (private), and a claim card with their X profile link, the post and Approve / Decline buttons goes to the mod channel (`STAFF_REVIEW_CHANNEL_ID`).
+2. They see "Verification in progress" (private), and a claim card with their X profile link, the post and Approve / Decline buttons goes to the log channel (the review channel).
 3. A moderator above Elite checks X and approves or declines. On approval the Reach XP is added to the ledger, the leaderboard updates by itself, and the member gets a DM. Declined claims can be claimed again.
 One live claim per member, post and action. These share the 30-points-per-UTC-day cap on official engagement. The buttons are restored automatically after a restart.
 
-### Live leaderboards
-Set `BUILD_LEADERBOARD_CHANNEL_ID` (Builder XP) and `REACH_LEADERBOARD_CHANNEL_ID` (engaging on posts, Reach XP). The bot keeps one message in each, showing the top 10 this cycle and the top 5 all time, and edits it in place a few seconds after points change (and again at 00:00 UTC for the new cycle). If a message is deleted it posts a fresh one. Elites can earn and are visible, tagged "(Elite)" next to their name; the founder, people with a role above Elite, excluded members and people who left are not shown. With neither channel set, the old behaviour (a daily combined post to `XP_ANNOUNCE_CHANNEL_ID`) is used.
+### Leaderboards: one channel, two commands
+There is one leaderboard channel (`LEADERBOARD_CHANNEL_ID`). In it the bot keeps **two live messages**, Build (Builder XP) and Engagement (Reach XP), each showing the top 10 this cycle and the top 5 all time. They are edited in place a few seconds after points change, again at 00:00 UTC for the new cycle, and re-posted if deleted.
+
+There are two commands, `/buildleaderboard` and `/reachleaderboard` (each with a this-cycle / all-time choice, paginated). **They only work in the leaderboard channel.** Anywhere else, a member gets a private "Leaderboard commands only work in #channel" and nothing is shown. The only exception is anyone with a role above Elite, who can use them anywhere. (`LEADERBOARD_COMMAND_CHANNEL_ID` can name a different channel for the commands; it defaults to the leaderboard channel.) `/xp` is a private check of your own numbers and works anywhere.
+
+Elites can earn and are shown, tagged "(Elite)" next to their name. The founder, people with a role above Elite, excluded members and people who left are not shown.
 
 ### The ledger
 `xp_ledger` is the source of truth and leaderboards are `SUM` queries over it. Every award has a unique `award_key` (for example `{submission_id}:{category}`), so a double click, a retry or a restart can never pay twice. Daily caps (official engagement 30 points per UTC day; 3 counted own posts per UTC day), once-per-link rules, weekly streak bonuses (5 distinct UTC days: own posts +30 Reach, Academy +20 Builder), referrals, learn together and the weekly challenge are all in `xp_engine.py`. No LLM is used to score or review.
@@ -86,12 +93,13 @@ Invite use counts are cached at startup and on invite create/delete; when someon
 | Command | Who | What |
 |---|---|---|
 | `/xp [member]` | anyone | This cycle's Reach and Builder XP, progress to the Elite minimums, rank in each lane, all-time totals (private) |
-| `/xpleaderboard lane period` | anyone | Reach, Builder or combined; this cycle or all time; paginated top 10 |
+| `/buildleaderboard period` | anyone, in the leaderboard channel | Builder XP top earners; this cycle or all time; paginated |
+| `/reachleaderboard period` | anyone, in the leaderboard channel | Reach XP (engaging on posts) top earners; this cycle or all time; paginated |
 | `/referrals` | anyone | Your referrals and their stages (private) |
 | `/invitedby member` | anyone | Record who invited you if it was not tracked |
 | `/xphandle username` | anyone | Set or change the X username used on engagement claims |
 | `/challenge status` | anyone | The current challenge and time left |
-| `/xpost link note` | staff | Post an X link as an engagement card (Like, Retweet, Comment buttons) |
+| `/xpost link note` | above Elite | Post an X link as an engagement card in the Reach channel (Like, Retweet, Comment buttons) |
 | `/officialpost link` | staff | Open an official post window (only used to flag Reach proof posted in time) |
 | `/challenge create title description` | staff | Start the weekly challenge |
 | `/award member category reason` | staff | Staff awards (events, manual) |
@@ -167,19 +175,17 @@ Then point `SUPABASE_DB_*` (below) at that project and role. `database.py`'s `in
 | SOCIAL_REMINDER_HOUR | No | 12 |
 | SOCIAL_LINKS | No | https://x.com/G_NEXTGEN |
 | XP_PING_ROLE_ID | No | 0 (falls back to MEMBER_ROLE_ID) |
-| XP_ANNOUNCE_CHANNEL_ID | No | 0 (/xpost posts here, falling back to the channel it was run in; the daily leaderboard needs it) |
 | XP_LEADERBOARD_ENABLED | No | true |
-| XP_LEADERBOARD_HOUR | No | 8 (UTC) |
+| XP_LEADERBOARD_HOUR | No | 0 (UTC; when the live boards are refreshed for the new cycle) |
 | REACH_CHANNEL_ID | No | 0 (owner sets; Reach proof channel) |
-| ACADEMY_CHANNEL_ID | No | 0 (owner sets; Academy proof channel) |
 | BUILD_CHANNEL_ID | No | 1529120140711432344 |
 | TUTORIAL_CHANNEL_ID | No | 1520157303054139492 |
 | PROMPT_RESULT_CHANNEL_ID | No | 1492637326541590790 |
 | CHALLENGE_CHANNEL_ID | No | 0 (weekly challenge posts) |
-| BUILD_LEADERBOARD_CHANNEL_ID | No | 0 (live Builder XP leaderboard) |
-| REACH_LEADERBOARD_CHANNEL_ID | No | 0 (live engagement / Reach XP leaderboard) |
-| REVIEW_IN_CHANNEL_KEYS | No | academy,build,tutorial,prompt_result (channels whose review buttons sit under the post) |
-| STAFF_REVIEW_CHANNEL_ID | No | falls back to STAFF_CHANNEL_ID, then LOG_CHANNEL_ID |
+| LEADERBOARD_CHANNEL_ID | No | 0 (the one leaderboard channel: live boards, and where the commands work) |
+| LEADERBOARD_COMMAND_CHANNEL_ID | No | = LEADERBOARD_CHANNEL_ID (only if the commands should work in a different channel) |
+| REVIEW_IN_CHANNEL_KEYS | No | build,tutorial,prompt_result (channels whose review buttons sit under the post) |
+| STAFF_REVIEW_CHANNEL_ID | No | LOG_CHANNEL_ID (reviews go to the log channel unless you set this) |
 | ELITE_ROLE_ID | **Set this** | 0 (needed for "above Elite" checks, the legacy import, and showing Elites on leaderboards) |
 | STAFF_ROLE_IDS | No | empty (extra roles treated as above Elite) |
 | REVIEWER_ROLE_IDS | No | empty (extra reviewer roles; empty means only roles above Elite) |

@@ -119,7 +119,7 @@ class TestRegistration(CogCase):
     async def test_commands_register_with_discord_py(self):
         await self.bot.add_cog(self.cog)
         names = {c.name for c in self.bot.tree.get_commands()}
-        self.assertTrue({"xp", "xpleaderboard", "referrals", "invitedby", "xpost", "officialpost", "award",
+        self.assertTrue({"xp", "buildleaderboard", "reachleaderboard", "referrals", "invitedby", "xpost", "officialpost", "award",
                          "xpadjust", "xpexclude", "xpinclude", "referralclear", "challenge", "cycle"} <= names, names)
         groups = {c.name: {s.name for s in c.commands} for c in self.bot.tree.get_commands()
                   if isinstance(c, discord.app_commands.Group)}

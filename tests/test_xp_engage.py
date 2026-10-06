@@ -26,7 +26,7 @@ from tests.test_xp_cog import ACADEMY, BUILD, CHANNELS, GUILD, NOW, REACH, STAFF
 
 ELITE, MOD = 700, 701
 POSITIONS = {ELITE: 5, MOD: 9}
-BOARD_BUILD, BOARD_REACH = 801, 802
+BOARD_CH = 801
 LINK = "https://x.com/G_NEXTGEN/status/55"
 
 
@@ -85,11 +85,10 @@ class EngageCase(CogCase):
         self.build_ch.guild = self.guild
         self.build_ch.messages = self.proof_msgs
         self.build_ch.get_partial_message = lambda mid: self.proof_msgs[mid]
-        self.board_build = FakeChannel(BOARD_BUILD, "build-leaderboard", self.guild)
-        self.board_reach = FakeChannel(BOARD_REACH, "engagement-leaderboard", self.guild)
+        self.board_ch = FakeChannel(BOARD_CH, "leaderboard", self.guild)
         self.staff.guild = self.guild
         chans = {STAFF_CH: self.staff, REACH: self.reach_ch, BUILD: self.build_ch,
-                 BOARD_BUILD: self.board_build, BOARD_REACH: self.board_reach}
+                 BOARD_CH: self.board_ch}
         self.bot.get_channel = lambda cid: chans.get(cid)
         self.guild.get_channel = lambda cid: chans.get(cid)
 
@@ -101,8 +100,8 @@ class EngageCase(CogCase):
             mock.patch.object(config, "IGNORED_CHANNEL_IDS", set()),
             mock.patch.object(config, "ANNOUNCEMENT_CHANNEL_ID", 0),
             mock.patch.object(config, "IMMUNE_ROLE_IDS", {ELITE, MOD}),
-            mock.patch.object(config, "BUILD_LEADERBOARD_CHANNEL_ID", BOARD_BUILD),
-            mock.patch.object(config, "REACH_LEADERBOARD_CHANNEL_ID", BOARD_REACH),
+            mock.patch.object(config, "LEADERBOARD_CHANNEL_ID", BOARD_CH),
+            mock.patch.object(config, "LEADERBOARD_COMMAND_CHANNEL_ID", BOARD_CH),
         ):
             p.start()
             self.addCleanup(p.stop)
@@ -521,8 +520,9 @@ class TestInChannelReview(EngageCase):
 
 
 class TestLiveLeaderboards(EngageCase):
-    def build_text(self):
-        return self.board_build.send.await_args.kwargs["embed"]
+    def posted(self):
+        """The embeds sent to the leaderboard channel, in order: Build first, then Reach."""
+        return [c.kwargs["embed"] for c in self.board_ch.send.await_args_list]
 
     async def asyncSetUp(self):
         await super().asyncSetUp()
@@ -535,10 +535,10 @@ class TestLiveLeaderboards(EngageCase):
         self.give(7, "reach", 5, "e")
         self.give(20, "reach", 15, "f")
 
-    async def test_each_lane_gets_its_own_channel_and_message(self):
+    async def test_both_boards_live_in_the_one_leaderboard_channel(self):
         await self.cog.update_boards()
-        build = self.board_build.send.await_args.kwargs["embed"]
-        reach = self.board_reach.send.await_args.kwargs["embed"]
+        self.assertEqual(self.board_ch.send.await_count, 2)
+        build, reach = self.posted()
         self.assertEqual((build.title, reach.title), ("Build leaderboard", "Engagement leaderboard"))
         self.assertIn("1. **user7** -- 30 XP", build.description)
         self.assertIn("2. **user20** (Elite) -- 20 XP", build.description)
@@ -548,7 +548,7 @@ class TestLiveLeaderboards(EngageCase):
 
     async def test_elites_are_visible_and_people_above_elite_are_hidden(self):
         await self.cog.update_boards()
-        build = self.board_build.send.await_args.kwargs["embed"].description
+        build = self.posted()[0].description
         self.assertIn("user20", build)       # Elite shows up, starting from zero and earning
         self.assertNotIn("user21", build)    # a moderator's 500 does not
 
@@ -559,46 +559,46 @@ class TestLiveLeaderboards(EngageCase):
         self.assertIn("**user20** (Elite) -- 20 XP", embed.fields[0].value)  # the all-time list too
         self.assertNotIn("user7** (Elite)", embed.description + embed.fields[0].value)
 
-    async def test_the_leaderboard_command_and_the_daily_summary_tag_elites_too(self):
+    async def test_the_command_tags_elites_too(self):
         i = self.inter(self.plain)
+        i.channel_id = BOARD_CH
         with mock.patch.object(xp_cog, "now_utc", return_value=NOW):
-            await xp_cog.XPCog.xpleaderboard.callback(self.cog, i, "builder", "cycle")
-            summary = self.cog.board_summary_embed(self.guild)
+            await xp_cog.XPCog.buildleaderboard.callback(self.cog, i, "cycle")
         self.assertIn("**user20** (Elite) -- 20 XP", i.followup.send.await_args.kwargs["embed"].description)
-        self.assertIn("**user20** (Elite)", " ".join(f.value for f in summary.fields))
 
     async def test_without_an_elite_role_configured_nobody_is_tagged(self):
         with mock.patch.object(config, "ELITE_ROLE_ID", 0):
             self.assertNotIn("(Elite)", self.cog._who(self.guild, 20))
 
-    async def test_the_message_is_edited_in_place_not_reposted(self):
+    async def test_the_messages_are_edited_in_place_not_reposted(self):
         await self.cog.update_boards()
         first_id = int(self.kv[f"{pc.BOARD['kv_prefix']}:builder"])
         self.give(8, "builder", 99, "g")
         await self.cog.update_boards()
-        self.assertEqual(self.board_build.send.await_count, 1)
-        edit = self.board_build.messages[first_id].edit.await_args.kwargs["embed"]
+        self.assertEqual(self.board_ch.send.await_count, 2)                   # still just the two original posts
+        edit = self.board_ch.messages[first_id].edit.await_args.kwargs["embed"]
         self.assertIn("1. **user8** -- 99 XP", edit.description)              # the new points are on the board
 
     async def test_a_deleted_board_message_is_posted_again(self):
         await self.cog.update_boards()
         first_id = int(self.kv[f"{pc.BOARD['kv_prefix']}:reach"])
-        del self.board_reach.messages[first_id]
+        del self.board_ch.messages[first_id]
         await self.cog.update_boards()
-        self.assertEqual(self.board_reach.send.await_count, 2)
+        self.assertEqual(self.board_ch.send.await_count, 3)
         self.assertNotEqual(int(self.kv[f"{pc.BOARD['kv_prefix']}:reach"]), first_id)
 
-    async def test_unset_and_silent_channels_are_skipped(self):
-        with mock.patch.object(config, "REACH_LEADERBOARD_CHANNEL_ID", 0), \
-                mock.patch.object(config, "IGNORED_CHANNEL_IDS", {BOARD_BUILD}):
+    async def test_an_unset_or_silent_channel_is_skipped(self):
+        with mock.patch.object(config, "LEADERBOARD_CHANNEL_ID", 0):
             await self.cog.update_boards()
-        self.board_build.send.assert_not_awaited()
-        self.board_reach.send.assert_not_awaited()
+        with mock.patch.object(config, "IGNORED_CHANNEL_IDS", {BOARD_CH}):
+            await self.cog.update_boards()
+        self.board_ch.send.assert_not_awaited()
 
     async def test_a_board_with_no_points_shows_no_points_yet(self):
         self.store._exec("DELETE FROM xp_ledger")
         await self.cog.update_boards()
-        self.assertIn("No points yet.", self.board_build.send.await_args.kwargs["embed"].description)
+        for embed in self.posted():
+            self.assertIn("No points yet.", embed.description)
 
     async def test_approvals_in_a_row_share_one_refresh(self):
         self.cog.update_boards = AsyncMock()
@@ -609,15 +609,15 @@ class TestLiveLeaderboards(EngageCase):
             await self.cog._board_task
         self.cog.update_boards.assert_awaited_once()
 
-    async def test_the_daily_job_refreshes_the_boards_when_they_are_set(self):
+    async def test_the_daily_job_refreshes_the_boards(self):
         self.cog.update_boards = AsyncMock()
         await xp_cog.XPCog._daily_board.coro(self.cog)
         self.cog.update_boards.assert_awaited_once()
 
-    async def test_a_board_failure_never_raises(self):
-        self.board_build.send.side_effect = Exception("Discord is down")
+    async def test_one_board_failing_never_raises_and_the_other_still_updates(self):
+        self.board_ch.send.side_effect = [Exception("Discord is down"), SimpleNamespace(id=1)]
         await self.cog.update_boards()  # must not raise
-        self.board_reach.send.assert_awaited_once()                           # the other board still updates
+        self.assertEqual(self.board_ch.send.await_count, 2)
 
     async def test_the_hourly_referral_sweep_refreshes_the_boards_when_it_pays(self):
         self.cog.request_board_refresh = MagicMock()
@@ -637,6 +637,72 @@ class TestLiveLeaderboards(EngageCase):
         await xp_cog.XPCog.xphandle.callback(self.cog, bad, "no way!!")
         self.assertIn("does not look like", bad.response.send_message.await_args.args[0])
         self.assertEqual(self.store.get_handle(7), "Sonofpeace")
+
+
+ELSEWHERE = 999
+
+
+class TestLeaderboardCommandsOnlyWorkInTheLeaderboardChannel(EngageCase):
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.give(7, "builder", 30, "a")
+        self.give(8, "reach", 40, "b")
+
+    def inter_in(self, user, channel_id):
+        i = self.inter(user)
+        i.channel_id = channel_id
+        return i
+
+    async def run_check(self, user, channel_id):
+        """True if the command's channel check lets this member run it there."""
+        check = xp_cog.XPCog.buildleaderboard.checks[0]  # the check really attached to the command
+        i = self.inter_in(user, channel_id)
+        return await check(i), i
+
+    async def test_members_can_use_it_in_the_leaderboard_channel(self):
+        ok, _ = await self.run_check(self.plain, BOARD_CH)
+        self.assertTrue(ok)
+
+    async def test_members_are_turned_away_everywhere_else_with_a_private_note(self):
+        for where in (ELSEWHERE, REACH, BUILD, STAFF_CH):
+            ok, i = await self.run_check(self.plain, where)
+            self.assertFalse(ok, where)
+            msg = i.response.send_message.await_args
+            self.assertEqual(msg.args[0], f"Leaderboard commands only work in <#{BOARD_CH}>.")
+            self.assertTrue(msg.kwargs["ephemeral"])
+
+    async def test_elites_are_not_moderators_so_the_restriction_applies_to_them_too(self):
+        ok, _ = await self.run_check(self.elite, ELSEWHERE)
+        self.assertFalse(ok)
+
+    async def test_moderators_above_elite_can_use_it_anywhere(self):
+        ok, i = await self.run_check(self.mod, ELSEWHERE)
+        self.assertTrue(ok)
+        i.response.send_message.assert_not_awaited()
+
+    async def test_both_commands_are_covered_and_show_their_own_lane(self):
+        for command, expect in ((xp_cog.XPCog.buildleaderboard, "user7"), (xp_cog.XPCog.reachleaderboard, "user8")):
+            self.assertEqual(len(command.checks), 1, command.name)             # the channel check is attached
+            i = self.inter_in(self.plain, BOARD_CH)
+            with mock.patch.object(xp_cog, "now_utc", return_value=NOW):
+                await command.callback(self.cog, i, "cycle")
+            self.assertIn(expect, i.followup.send.await_args.kwargs["embed"].description)
+
+    async def test_a_separate_command_channel_can_be_set(self):
+        with mock.patch.object(config, "LEADERBOARD_COMMAND_CHANNEL_ID", ELSEWHERE):
+            ok_there, _ = await self.run_check(self.plain, ELSEWHERE)
+            ok_board, i = await self.run_check(self.plain, BOARD_CH)
+        self.assertTrue(ok_there)
+        self.assertFalse(ok_board)
+        self.assertIn(f"<#{ELSEWHERE}>", i.response.send_message.await_args.args[0])
+
+    async def test_with_no_channel_set_there_is_no_restriction(self):
+        with mock.patch.object(config, "LEADERBOARD_COMMAND_CHANNEL_ID", 0):
+            ok, _ = await self.run_check(self.plain, ELSEWHERE)
+        self.assertTrue(ok)
+
+    async def test_the_old_combined_command_is_gone(self):
+        self.assertFalse(hasattr(xp_cog.XPCog, "xpleaderboard"))
 
 
 if __name__ == "__main__":

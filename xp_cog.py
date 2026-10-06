@@ -89,6 +89,19 @@ def staff_only():
     return app_commands.check(pred)
 
 
+def leaderboard_channel_only():
+    """Leaderboard commands work only in the leaderboard channel, unless the member has a role
+    above Elite. Anywhere else they get a private note and nothing is shown."""
+    async def pred(interaction: discord.Interaction):
+        cid = config.LEADERBOARD_COMMAND_CHANNEL_ID
+        here = getattr(interaction, "channel_id", None) or getattr(getattr(interaction, "channel", None), "id", None)
+        if not cid or here == cid or is_above_elite(interaction.user, interaction.guild):
+            return True
+        await interaction.response.send_message(f"Leaderboard commands only work in <#{cid}>.", ephemeral=True)
+        return False
+    return app_commands.check(pred)
+
+
 def is_silent_channel(channel) -> bool:
     """Announcement, ignored and ticket channels: the bot must stay quiet there."""
     return (channel.id in config.IGNORED_CHANNEL_IDS
@@ -320,7 +333,7 @@ class LeaderboardView(discord.ui.View):
 
     async def interaction_check(self, interaction):
         if interaction.user.id != self.owner_id:
-            await interaction.response.send_message("Run /xpleaderboard yourself to page through it.", ephemeral=True)
+            await interaction.response.send_message("Run the leaderboard command yourself to page through it.", ephemeral=True)
             return False
         return True
 
@@ -372,11 +385,14 @@ class XPCog(commands.Cog):
             log.warning(w)
         if config.POINTS_TZ.upper() != "UTC":
             log.warning("POINTS_TZ is '%s' but points always run on UTC; the setting is ignored.", config.POINTS_TZ)
-        for name in ("REACH_CHANNEL_ID", "ACADEMY_CHANNEL_ID"):
-            if not getattr(config, name):
-                log.warning("%s is not set, so that proof channel is off.", name)
+        if not config.REACH_CHANNEL_ID:
+            log.warning("REACH_CHANNEL_ID is not set: official post cards and Reach proof are off.")
         if not config.STAFF_REVIEW_CHANNEL_ID:
-            log.warning("No STAFF_REVIEW_CHANNEL_ID, STAFF_CHANNEL_ID or LOG_CHANNEL_ID: review cards cannot be posted.")
+            log.warning("No STAFF_REVIEW_CHANNEL_ID or LOG_CHANNEL_ID: review cards and claims cannot be posted.")
+        if not config.LEADERBOARD_CHANNEL_ID:
+            log.warning("LEADERBOARD_CHANNEL_ID is not set: no live leaderboards, and the leaderboard commands work everywhere.")
+        if config.LEADERBOARD_COMMAND_CHANNEL_ID and config.LEADERBOARD_COMMAND_CHANNEL_ID in config.PROOF_CHANNEL_IDS:
+            log.warning("The leaderboard command channel is also a proof channel; every message there is checked as proof.")
         if not config.ELITE_ROLE_ID:
             log.warning("ELITE_ROLE_ID is not set: 'above Elite' falls back to the immune roles, Elites are hidden from "
                         "leaderboards, and the legacy XP import is waiting.")
@@ -398,10 +414,9 @@ class XPCog(commands.Cog):
         await self._run_legacy_import()
         if not self._hourly.is_running():
             self._hourly.start()
-        boards = config.BUILD_LEADERBOARD_CHANNEL_ID or config.REACH_LEADERBOARD_CHANNEL_ID
-        if config.XP_LEADERBOARD_ENABLED and (boards or config.XP_ANNOUNCE_CHANNEL_ID) and not self._daily_board.is_running():
+        if config.XP_LEADERBOARD_ENABLED and config.LEADERBOARD_CHANNEL_ID and not self._daily_board.is_running():
             self._daily_board.start()
-            log.info("Daily points leaderboard started (%02d:00 UTC).", config.XP_LEADERBOARD_HOUR)
+            log.info("Daily leaderboard refresh started (%02d:00 UTC).", config.XP_LEADERBOARD_HOUR)
         await self.update_boards()
 
     LEGACY_FLAG = "points_legacy_import_done"
@@ -901,16 +916,18 @@ class XPCog(commands.Cog):
         await self.update_boards()
 
     async def update_boards(self):
-        """Keep one message per lane up to date in its own channel: edit it in place, or post it
-        again if it was deleted. Does nothing for a lane whose channel is not set."""
-        for lane, cid in ((pc.BUILDER, config.BUILD_LEADERBOARD_CHANNEL_ID), (pc.REACH, config.REACH_LEADERBOARD_CHANNEL_ID)):
-            if not cid:
-                continue
+        """Keep the two live leaderboards (Build, then Reach) up to date in the one leaderboard
+        channel: each is a single message, edited in place, or posted again if it was deleted.
+        Does nothing when LEADERBOARD_CHANNEL_ID is not set."""
+        cid = config.LEADERBOARD_CHANNEL_ID
+        if not cid:
+            return
+        ch = self.bot.get_channel(cid)
+        if ch is None or is_silent_channel(ch):
+            log.warning("Leaderboard channel %s is missing or silent; skipping the live boards.", cid)
+            return
+        for lane in (pc.BUILDER, pc.REACH):
             try:
-                ch = self.bot.get_channel(cid)
-                if ch is None or is_silent_channel(ch):
-                    log.warning("Leaderboard channel %s for %s is missing or silent; skipping.", cid, lane)
-                    continue
                 embed = self.board_embed(ch.guild, lane)
                 key = f"{pc.BOARD['kv_prefix']}:{lane}"
                 mid = db.kv_get(key)
@@ -1055,25 +1072,7 @@ class XPCog(commands.Cog):
 
     @tasks.loop(time=datetime.time(hour=config.XP_LEADERBOARD_HOUR, minute=0, tzinfo=UTC))
     async def _daily_board(self):
-        if config.BUILD_LEADERBOARD_CHANNEL_ID or config.REACH_LEADERBOARD_CHANNEL_ID:
-            await self.update_boards()  # the live boards roll over to the new cycle at midnight UTC
-            return
-        today = xe.day_key(now_utc())
-        if db.kv_get("points_leaderboard_last_date") == today:
-            return
-        ch = self.bot.get_channel(config.XP_ANNOUNCE_CHANNEL_ID)
-        if not ch or is_silent_channel(ch):
-            log.warning("XP_ANNOUNCE_CHANNEL_ID is not usable; skipping the daily leaderboard.")
-            return
-        embed = self.board_summary_embed(ch.guild)
-        db.kv_set("points_leaderboard_last_date", today)
-        if embed is None:
-            return
-        try:
-            await ch.send(embed=embed)
-            log.info("Posted the daily points leaderboard.")
-        except Exception as e:
-            log.error("Failed to post the daily leaderboard: %s", e)
+        await self.update_boards()  # the live boards roll over to the new cycle at midnight UTC
 
     @_daily_board.before_loop
     async def _daily_ready(self):
@@ -1090,22 +1089,6 @@ class XPCog(commands.Cog):
         m = guild.get_member(uid)
         return m.display_name if m else f"User {uid}"
 
-    def board_summary_embed(self, guild):
-        now = now_utc()
-        hide = self.hide_fn(guild)
-        n = self.engine.cycle_of(now)
-        start, end = self.engine.cycle_range(n)
-        e = discord.Embed(title="Points leaderboard", color=discord.Color.gold(),
-                          description=f"Cycle {n}, {_cycle_text(start, end)}.")
-        any_rows = False
-        for lane in pc.LANES:
-            rows = self.engine.leaderboard(lane, "cycle", now, hide, limit=5)
-            if rows:
-                any_rows = True
-            body = "\n".join(f"{r}. {self._who(guild, u)} -- {p}" for r, u, p in rows) or "No points yet."
-            e.add_field(name=f"{LANE_TITLES[lane]} XP", value=body, inline=True)
-        return e if any_rows else None
-
     # ---- public commands -------------------------------------------------
     @app_commands.command(name="xp", description="Check your Reach and Builder XP for this cycle.")
     @app_commands.describe(member="Whose XP to check. Leave empty for your own.")
@@ -1120,13 +1103,24 @@ class XPCog(commands.Cog):
                         value=f"{s[lane]} of {need} needed ({rank})\nAll time: {s[lane + '_alltime']}", inline=True)
         await i.response.send_message(embed=e, ephemeral=True)
 
-    @app_commands.command(name="xpleaderboard", description="Top XP earners.")
-    @app_commands.describe(lane="Which lane to show.", period="This cycle or all time.")
-    @app_commands.choices(
-        lane=[app_commands.Choice(name="Reach", value="reach"), app_commands.Choice(name="Builder", value="builder"),
-              app_commands.Choice(name="Combined", value="combined")],
-        period=[app_commands.Choice(name="This cycle", value="cycle"), app_commands.Choice(name="All time", value="alltime")])
-    async def xpleaderboard(self, i: discord.Interaction, lane: str = "combined", period: str = "cycle"):
+    PERIOD_CHOICES = [app_commands.Choice(name="This cycle", value="cycle"),
+                      app_commands.Choice(name="All time", value="alltime")]
+
+    @app_commands.command(name="buildleaderboard", description="Top Builder XP earners (task proof).")
+    @app_commands.describe(period="This cycle or all time.")
+    @app_commands.choices(period=PERIOD_CHOICES)
+    @leaderboard_channel_only()
+    async def buildleaderboard(self, i: discord.Interaction, period: str = "cycle"):
+        await self._show_leaderboard(i, pc.BUILDER, period)
+
+    @app_commands.command(name="reachleaderboard", description="Top XP earners for engaging on posts.")
+    @app_commands.describe(period="This cycle or all time.")
+    @app_commands.choices(period=PERIOD_CHOICES)
+    @leaderboard_channel_only()
+    async def reachleaderboard(self, i: discord.Interaction, period: str = "cycle"):
+        await self._show_leaderboard(i, pc.REACH, period)
+
+    async def _show_leaderboard(self, i, lane, period):
         await i.response.defer()
         now = now_utc()
         rows = self.engine.leaderboard(lane, period, now, self.hide_fn(i.guild), limit=pc.LEADERBOARD_FETCH)
@@ -1208,9 +1202,10 @@ class XPCog(commands.Cog):
         if not xe.is_x_status_link(link):
             await i.followup.send("Give a link to an X post.", ephemeral=True)
             return
-        target = i.channel
-        if config.XP_ANNOUNCE_CHANNEL_ID:
-            target = i.guild.get_channel(config.XP_ANNOUNCE_CHANNEL_ID) or i.channel
+        target = i.guild.get_channel(config.REACH_CHANNEL_ID) if config.REACH_CHANNEL_ID else None
+        if target is None:
+            await i.followup.send("The Reach channel is not set. Set REACH_CHANNEL_ID first.", ephemeral=True)
+            return
         if is_silent_channel(target):
             await i.followup.send(f"{target.mention} is a silent channel, so I will not post there.", ephemeral=True)
             return

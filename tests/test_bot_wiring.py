@@ -60,10 +60,10 @@ class TestCommandTree(unittest.IsolatedAsyncioTestCase):
                     "guide", "announce", "ignore", "unignore", "ignoredchannels", "report", "note", "reactionrole"):
             self.assertIn(old, names)
         # the new points commands are there, and the retired single-points ones are not
-        for new in ("xp", "xpleaderboard", "referrals", "invitedby", "officialpost", "xpost", "award", "xpadjust",
+        for new in ("xp", "buildleaderboard", "reachleaderboard", "referrals", "invitedby", "officialpost", "xpost", "award", "xpadjust",
                     "xpexclude", "xpinclude", "referralclear", "challenge", "cycle"):
             self.assertIn(new, names)
-        for gone in ("xproof", "addxp", "removexp"):
+        for gone in ("xproof", "addxp", "removexp", "xpleaderboard"):
             self.assertNotIn(gone, names)
         # the sync inside commands_cog ran after the points commands were added
         b.tree.sync.assert_awaited()
@@ -133,7 +133,7 @@ class TestDefaults(unittest.TestCase):
     def test_new_env_defaults(self):
         env = {k: v for k, v in os.environ.items() if k not in (
             "BUILD_CHANNEL_ID", "TUTORIAL_CHANNEL_ID", "PROMPT_RESULT_CHANNEL_ID", "REACH_CHANNEL_ID",
-            "ACADEMY_CHANNEL_ID", "CYCLE_LENGTH_DAYS", "ELITE_MIN_REACH", "ELITE_MIN_BUILDER", "ELITE_SLOTS_PER_CYCLE",
+            "CYCLE_LENGTH_DAYS", "LEADERBOARD_CHANNEL_ID", "LEADERBOARD_COMMAND_CHANNEL_ID", "REVIEW_IN_CHANNEL_KEYS", "ELITE_MIN_REACH", "ELITE_MIN_BUILDER", "ELITE_SLOTS_PER_CYCLE",
             "OFFICIAL_POST_WINDOW_MINUTES", "MIN_ACCOUNT_AGE_DAYS", "POINTS_TZ", "STAFF_REVIEW_CHANNEL_ID")}
         with mock.patch.dict(os.environ, env, clear=True):
             import importlib
@@ -141,19 +141,38 @@ class TestDefaults(unittest.TestCase):
             self.assertEqual(cfg.BUILD_CHANNEL_ID, 1529120140711432344)
             self.assertEqual(cfg.TUTORIAL_CHANNEL_ID, 1520157303054139492)
             self.assertEqual(cfg.PROMPT_RESULT_CHANNEL_ID, 1492637326541590790)
-            self.assertEqual((cfg.REACH_CHANNEL_ID, cfg.ACADEMY_CHANNEL_ID), (0, 0))
+            self.assertEqual(cfg.REACH_CHANNEL_ID, 0)
+            self.assertFalse(hasattr(cfg, "ACADEMY_CHANNEL_ID"))   # no Academy channel any more
+            self.assertEqual((cfg.LEADERBOARD_CHANNEL_ID, cfg.LEADERBOARD_COMMAND_CHANNEL_ID), (0, 0))
+            self.assertEqual(cfg.REVIEW_IN_CHANNEL_KEYS, {"build", "tutorial", "prompt_result"})
             self.assertEqual((cfg.CYCLE_LENGTH_DAYS, cfg.ELITE_MIN_REACH, cfg.ELITE_MIN_BUILDER, cfg.ELITE_SLOTS_PER_CYCLE),
                              (14, 100, 100, 5))
             self.assertEqual((cfg.OFFICIAL_POST_WINDOW_MINUTES, cfg.MIN_ACCOUNT_AGE_DAYS, cfg.POINTS_TZ), (120, 7, "UTC"))
             self.assertEqual(set(cfg.PROOF_CHANNELS), {"build", "tutorial", "prompt_result"})
         importlib.reload(config)
 
-    def test_staff_review_channel_falls_back_to_the_staff_channel(self):
+    def test_reviews_go_to_the_log_channel_by_default_not_the_staff_channel(self):
         env = {k: v for k, v in os.environ.items() if k != "STAFF_REVIEW_CHANNEL_ID"}
-        env["STAFF_CHANNEL_ID"] = "321"
+        env.update({"STAFF_CHANNEL_ID": "321", "LOG_CHANNEL_ID": "654"})
         with mock.patch.dict(os.environ, env, clear=True):
             import importlib
-            self.assertEqual(importlib.reload(config).STAFF_REVIEW_CHANNEL_ID, 321)
+            self.assertEqual(importlib.reload(config).STAFF_REVIEW_CHANNEL_ID, 654)
+            env["STAFF_REVIEW_CHANNEL_ID"] = "987"   # an explicit override still wins
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(importlib.reload(config).STAFF_REVIEW_CHANNEL_ID, 987)
+        importlib.reload(config)
+
+    def test_the_command_channel_defaults_to_the_leaderboard_channel(self):
+        env = {k: v for k, v in os.environ.items() if k not in ("LEADERBOARD_COMMAND_CHANNEL_ID",)}
+        env["LEADERBOARD_CHANNEL_ID"] = "111"
+        with mock.patch.dict(os.environ, env, clear=True):
+            import importlib
+            cfg = importlib.reload(config)
+            self.assertEqual((cfg.LEADERBOARD_CHANNEL_ID, cfg.LEADERBOARD_COMMAND_CHANNEL_ID), (111, 111))
+            env["LEADERBOARD_COMMAND_CHANNEL_ID"] = "222"
+        with mock.patch.dict(os.environ, env, clear=True):
+            cfg = importlib.reload(config)
+            self.assertEqual((cfg.LEADERBOARD_CHANNEL_ID, cfg.LEADERBOARD_COMMAND_CHANNEL_ID), (111, 222))
         importlib.reload(config)
 
 

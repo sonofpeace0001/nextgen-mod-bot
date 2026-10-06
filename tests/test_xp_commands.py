@@ -39,13 +39,12 @@ class CommandCase(CogCase):
     async def asyncSetUp(self):
         await super().asyncSetUp()
         self.channels = {BUILD: self.proof_channel, REACH: channel(REACH, "reach"),
-                         XP_CH: channel(XP_CH, "xp-updates"), CHALLENGE_CH: channel(CHALLENGE_CH, "challenges")}
+                         CHALLENGE_CH: channel(CHALLENGE_CH, "challenges")}
         self.guild.get_channel = lambda cid: self.channels.get(cid)
         self.guild.name = "NEXTGEN"
         self.admin = member(1, admin=True)
         self.cog.request_board_refresh = mock.MagicMock()
         extra = [
-            mock.patch.object(config, "XP_ANNOUNCE_CHANNEL_ID", XP_CH),
             mock.patch.object(config, "XP_PING_ROLE_ID", 55),
             mock.patch.object(config, "REACH_CHANNEL_ID", REACH),
             mock.patch.object(config, "BUILD_CHANNEL_ID", BUILD),
@@ -94,7 +93,8 @@ class TestPublicCommands(CommandCase):
         self.store.exclude(100, "test")
         i = self.inter()
         with mock.patch.object(xp_cog, "now_utc", return_value=NOW):
-            await cmd(xp_cog.XPCog.xpleaderboard)(self.cog, i, "builder", "cycle")
+            i.channel_id = BUILD
+            await cmd(xp_cog.XPCog.buildleaderboard)(self.cog, i, "cycle")
         i.response.defer.assert_awaited()
         kw = i.followup.send.await_args.kwargs
         lines = kw["embed"].description.split("\n")
@@ -110,7 +110,7 @@ class TestPublicCommands(CommandCase):
 
     async def test_leaderboard_when_empty(self):
         i = self.inter()
-        await cmd(xp_cog.XPCog.xpleaderboard)(self.cog, i, "combined", "alltime")
+        await cmd(xp_cog.XPCog.reachleaderboard)(self.cog, i, "alltime")
         self.assertIn("No points", i.followup.send.await_args.args[0])
 
     async def test_invitedby_rules(self):
@@ -153,11 +153,11 @@ class TestPublicCommands(CommandCase):
 
 
 class TestStaffCommands(CommandCase):
-    async def test_xpost_posts_an_engagement_card_in_the_xp_channel(self):
+    async def test_xpost_posts_an_engagement_card_in_the_reach_channel(self):
         i = self.inter()
         with mock.patch.object(xp_cog, "now_utc", return_value=NOW):
             await cmd(xp_cog.XPCog.xpost)(self.cog, i, "https://x.com/G_NEXTGEN/status/5", "Push this one")
-        send = self.channels[XP_CH].send.await_args
+        send = self.channels[REACH].send.await_args
         self.assertEqual(send.kwargs["content"], "<@&55> https://x.com/G_NEXTGEN/status/5")  # link in the text: Discord shows the post preview
         embed = send.kwargs["embed"]
         self.assertEqual(embed.description, "Push this one")
@@ -171,11 +171,26 @@ class TestStaffCommands(CommandCase):
         i = self.inter()
         await cmd(xp_cog.XPCog.xpost)(self.cog, i, "https://example.com/post", "")
         self.assertIn("link to an X post", i.followup.send.await_args.args[0])
-        with mock.patch.object(config, "IGNORED_CHANNEL_IDS", {XP_CH}):
+        with mock.patch.object(config, "IGNORED_CHANNEL_IDS", {REACH}):
             i2 = self.inter()
             await cmd(xp_cog.XPCog.xpost)(self.cog, i2, "https://x.com/G_NEXTGEN/status/5", "")
         self.assertIn("silent channel", i2.followup.send.await_args.args[0])
-        self.channels[XP_CH].send.assert_not_awaited()
+        self.channels[REACH].send.assert_not_awaited()
+        self.assertIsNone(self.store.latest_official_post())
+
+    async def test_xpost_always_goes_to_the_reach_channel_wherever_it_is_run(self):
+        i = self.inter()
+        i.channel = self.channels[BUILD]                     # run from the Build channel
+        await cmd(xp_cog.XPCog.xpost)(self.cog, i, "https://x.com/G_NEXTGEN/status/8", "")
+        self.channels[REACH].send.assert_awaited_once()
+        self.channels[BUILD].send.assert_not_awaited()
+
+    async def test_xpost_refuses_rather_than_post_elsewhere_when_the_reach_channel_is_not_set(self):
+        i = self.inter()
+        with mock.patch.object(config, "REACH_CHANNEL_ID", 0):
+            await cmd(xp_cog.XPCog.xpost)(self.cog, i, "https://x.com/G_NEXTGEN/status/9", "")
+        self.assertIn("Reach channel is not set", i.followup.send.await_args.args[0])
+        self.channels[BUILD].send.assert_not_awaited()
         self.assertIsNone(self.store.latest_official_post())
 
     async def test_officialpost_opens_a_window_quietly(self):
@@ -183,7 +198,7 @@ class TestStaffCommands(CommandCase):
         with mock.patch.object(xp_cog, "now_utc", return_value=NOW):
             await cmd(xp_cog.XPCog.officialpost)(self.cog, i, "https://x.com/G_NEXTGEN/status/6")
         self.assertIn("is open until", self.sent(i).args[0])
-        self.channels[XP_CH].send.assert_not_awaited()
+        self.channels[REACH].send.assert_not_awaited()
 
     async def test_award_adjust_exclude_include(self):
         target = member(7)
