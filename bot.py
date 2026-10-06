@@ -4,14 +4,16 @@ import asyncio, logging, traceback, sys, re
 import discord
 from discord.ext import commands
 import config, database as db, moderation, welcome, appeals, reports, roles, chat, tickets
-import tutor, prompthelper, prompts, retention, social, xp
+import tutor, prompthelper, prompts, retention, social
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", stream=sys.stdout)
 log = logging.getLogger("mod-agent")
 
 # Narrowed intents: only what the bot actually uses. Presence is intentionally OFF.
 # members + message_content are privileged and must be enabled in the Developer Portal.
-# dm_messages is required for ban appeals and welcome-DM replies; reactions for reaction roles.
+# dm_messages is required for ban appeals and welcome-DM replies; reactions for reaction roles;
+# invites lets the points system see which invite a new member used (referrals). Reading the
+# invite list also needs the Manage Server permission on the bot's role.
 intents = discord.Intents.none()
 intents.guilds = True
 intents.members = True
@@ -19,6 +21,7 @@ intents.message_content = True
 intents.guild_messages = True
 intents.dm_messages = True
 intents.reactions = True
+intents.invites = True
 
 # Patterns for founder commands (natural language)
 _IGNORE_CHANNEL_RE = re.compile(
@@ -35,6 +38,9 @@ class ModerationBot(commands.Bot):
         super().__init__(command_prefix="!mod ", intents=intents, help_command=None)
     async def setup_hook(self):
         db.init_db(); log.info("Database initialised.")
+        # The points cog loads first: commands_cog syncs the command tree when it loads, so
+        # anything added after it would not reach Discord until the next restart.
+        await self.load_extension("xp_cog"); log.info("Points cog loaded.")
         await self.load_extension("commands_cog"); log.info("Commands cog loaded.")
         self.loop.create_task(self._restore())
     async def _restore(self):
@@ -42,7 +48,6 @@ class ModerationBot(commands.Bot):
         try:
             await appeals.restore_pending_views(self)
             await reports.restore_pending_views(self)
-            await xp.restore_pending_views(self)
         except Exception as e: log.error(f"Restore error: {e}")
     async def on_ready(self):
         log.info(f"=== ONLINE as {self.user} (id={self.user.id}) ===")
@@ -53,7 +58,6 @@ class ModerationBot(commands.Bot):
             log.info(f"Guild '{g.name}': administrator={me.guild_permissions.administrator}")
         prompts.start(self)  # daily prompt scheduler (no-op if PROMPT_CHANNEL_ID unset)
         social.start(self)   # daily social-media reminder (no-op if unset)
-        xp.start(self)       # daily XP leaderboard post (no-op if XP_ANNOUNCE_CHANNEL_ID unset)
         await retention.seed_and_start(self)  # auto-kick scheduler (seeds activity first)
 
     async def on_message(self, message):
@@ -91,6 +95,12 @@ class ModerationBot(commands.Bot):
 
         # 6. Process prefix commands
         await self.process_commands(message)
+
+        # 6b. PROOF CHANNELS (points): the points cog handles intake. The chat, tutor and
+        #     prompt helper must stay silent here; only moderation still runs.
+        if message.channel.id in config.PROOF_CHANNEL_IDS:
+            await moderation.handle_message(self, message)
+            return
 
         # 7. TICKET CHANNELS: light moderation always; auto-reply only if not disabled.
         if tickets.is_ticket_channel(message.channel):

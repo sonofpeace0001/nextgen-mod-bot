@@ -46,10 +46,10 @@ PROMPT_CHANNEL_ID = int(os.getenv("PROMPT_CHANNEL_ID", "0"))
 # time, so an out-of-range value here would crash the ENTIRE bot on startup, not just
 # the scheduler. min(23, max(0, ...)) keeps a bad env var from taking the whole bot down.
 try:
-    PROMPT_HOUR = min(23, max(0, int(os.getenv("PROMPT_HOUR", "19"))))
+    PROMPT_HOUR = min(23, max(0, int(os.getenv("PROMPT_HOUR", "18"))))
 except ValueError:
-    PROMPT_HOUR = 19
-PROMPT_TZ = os.getenv("PROMPT_TZ", "Africa/Lagos")
+    PROMPT_HOUR = 18
+PROMPT_TZ = os.getenv("PROMPT_TZ", "UTC")
 
 # When true, the bot does NOT auto-reply in ticket channels (light moderation still runs).
 DISABLE_TICKET_REPLIES = os.getenv("DISABLE_TICKET_REPLIES", "true").lower() == "true"
@@ -91,26 +91,82 @@ except ValueError:
     SOCIAL_REMINDER_HOUR = 12
 SOCIAL_LINKS = os.getenv("SOCIAL_LINKS", "https://x.com/G_NEXTGEN")
 
-# X (Twitter) engagement XP: a mod runs /xpost to announce a new post (pings
-# XP_PING_ROLE_ID, defaults to MEMBER_ROLE_ID). Members submit proof of their own
-# engagement with /xproof; a mod approves/denies in STAFF_CHANNEL_ID (falls back to
-# LOG_CHANNEL_ID, same pattern as the welcome-reply forwarding). XP is only awarded on
-# approval -- no X API involved, verification is a human reviewing the submitted link.
-XP_REWARD_AMOUNT = int(os.getenv("XP_REWARD_AMOUNT", "10"))
-XP_PING_ROLE_ID  = int(os.getenv("XP_PING_ROLE_ID", "0")) or MEMBER_ROLE_ID
+# ---------------------------------------------------------------------------
+# Points: two lanes (Reach and Builder), proof posted in channels, checked by a human
+# reviewer, counted in cycles. Rules and point values live in points_config.py.
+# Everything about points runs on UTC.
+# ---------------------------------------------------------------------------
+def _int(name, default=0):
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
 
-# Dedicated channel for XP activity: /xpost announcements land here (falls back to
-# wherever the command was run if unset), and the daily leaderboard posts here too.
+
+def _id_set(name):
+    out = set()
+    for part in os.getenv(name, "").split(","):
+        part = part.strip()
+        if part.isdigit():
+            out.add(int(part))
+    return out
+
+
+# Proof channels. REACH and ACADEMY used to share one channel (1492637188817682442);
+# the owner sets both. A channel left at 0 is simply not a proof channel.
+REACH_CHANNEL_ID         = _int("REACH_CHANNEL_ID", 0)
+ACADEMY_CHANNEL_ID       = _int("ACADEMY_CHANNEL_ID", 0)
+BUILD_CHANNEL_ID         = _int("BUILD_CHANNEL_ID", 1529120140711432344)
+TUTORIAL_CHANNEL_ID      = _int("TUTORIAL_CHANNEL_ID", 1520157303054139492)
+PROMPT_RESULT_CHANNEL_ID = _int("PROMPT_RESULT_CHANNEL_ID", 1492637326541590790)
+CHALLENGE_CHANNEL_ID     = _int("CHALLENGE_CHANNEL_ID", 0)
+# Review cards go here. Falls back to STAFF_CHANNEL_ID, then LOG_CHANNEL_ID (same chain
+# the welcome-reply forwarding uses) so a card is never silently dropped.
+STAFF_REVIEW_CHANNEL_ID  = _int("STAFF_REVIEW_CHANNEL_ID", 0) or STAFF_CHANNEL_ID or LOG_CHANNEL_ID
+
+# channel key (see points_config.CHANNEL_LANES) -> channel id, only for channels that are set
+PROOF_CHANNELS = {k: v for k, v in {
+    "reach": REACH_CHANNEL_ID,
+    "academy": ACADEMY_CHANNEL_ID,
+    "build": BUILD_CHANNEL_ID,
+    "tutorial": TUTORIAL_CHANNEL_ID,
+    "prompt_result": PROMPT_RESULT_CHANNEL_ID,
+}.items() if v}
+PROOF_CHANNEL_IDS = set(PROOF_CHANNELS.values())
+PROOF_KEY_BY_ID = {v: k for k, v in PROOF_CHANNELS.items()}
+
+# Roles. STAFF_ROLE_IDS empty means staff = the immune roles above (plus the founder and
+# anyone with Administrator). REVIEWER_ROLE_IDS empty means staff only can review.
+ELITE_ROLE_ID     = _int("ELITE_ROLE_ID", 0)
+STAFF_ROLE_IDS    = _id_set("STAFF_ROLE_IDS")
+REVIEWER_ROLE_IDS = _id_set("REVIEWER_ROLE_IDS")
+
+# Time. Points code runs on UTC only; POINTS_TZ exists so a non-UTC value can be flagged at
+# startup, it is never used to compute a day, week or cycle.
+POINTS_TZ = os.getenv("POINTS_TZ", "UTC")
+_DEFAULT_CYCLE_START = "2026-10-05"
+CYCLE_START_DATE = os.getenv("CYCLE_START_DATE", _DEFAULT_CYCLE_START).strip() or _DEFAULT_CYCLE_START
+CYCLE_START_DATE_IS_DEFAULT = "CYCLE_START_DATE" not in os.environ
+CYCLE_LENGTH_DAYS = max(1, _int("CYCLE_LENGTH_DAYS", 14))
+
+# Elite selection (/cycle review). A member needs BOTH minimums in the same cycle.
+ELITE_MIN_REACH       = _int("ELITE_MIN_REACH", 100)
+ELITE_MIN_BUILDER     = _int("ELITE_MIN_BUILDER", 100)
+ELITE_SLOTS_PER_CYCLE = max(0, _int("ELITE_SLOTS_PER_CYCLE", 5))
+
+# Reach proof timing and account checks
+OFFICIAL_POST_WINDOW_MINUTES = max(1, _int("OFFICIAL_POST_WINDOW_MINUTES", 120))
+MIN_ACCOUNT_AGE_DAYS         = max(0, _int("MIN_ACCOUNT_AGE_DAYS", 7))
+
+# /xpost announcements ping XP_PING_ROLE_ID (defaults to MEMBER_ROLE_ID) and post in
+# XP_ANNOUNCE_CHANNEL_ID (falls back to the channel the command was run in).
+XP_PING_ROLE_ID        = int(os.getenv("XP_PING_ROLE_ID", "0")) or MEMBER_ROLE_ID
 XP_ANNOUNCE_CHANNEL_ID = int(os.getenv("XP_ANNOUNCE_CHANNEL_ID", "0"))
 
-# Daily XP leaderboard post (reuses PROMPT_TZ for the local timezone). No-op if
-# XP_ANNOUNCE_CHANNEL_ID isn't set, since there'd be nowhere to post it.
+# Daily leaderboard post to XP_ANNOUNCE_CHANNEL_ID, at this hour in UTC (was 09:00 Lagos,
+# which is 08:00 UTC, so the default moved to 8 to keep the same time of day).
 XP_LEADERBOARD_ENABLED = os.getenv("XP_LEADERBOARD_ENABLED", "true").lower() == "true"
-# Same crash risk as PROMPT_HOUR above: clamp so a bad env var can't take the whole bot down.
-try:
-    XP_LEADERBOARD_HOUR = min(23, max(0, int(os.getenv("XP_LEADERBOARD_HOUR", "9"))))
-except ValueError:
-    XP_LEADERBOARD_HOUR = 9
+XP_LEADERBOARD_HOUR = min(23, max(0, _int("XP_LEADERBOARD_HOUR", 8)))
 
 # Ticket channel detection
 TICKET_KEYWORDS        = os.getenv("TICKET_KEYWORDS", "ticket,support,help-desk").split(",")
