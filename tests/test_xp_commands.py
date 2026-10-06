@@ -14,6 +14,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+import discord  # noqa: E402
 import config  # noqa: E402
 import points_config as pc  # noqa: E402
 import xp_cog  # noqa: E402
@@ -42,6 +43,7 @@ class CommandCase(CogCase):
         self.guild.get_channel = lambda cid: self.channels.get(cid)
         self.guild.name = "NEXTGEN"
         self.admin = member(1, admin=True)
+        self.cog.request_board_refresh = mock.MagicMock()
         extra = [
             mock.patch.object(config, "XP_ANNOUNCE_CHANNEL_ID", XP_CH),
             mock.patch.object(config, "XP_PING_ROLE_ID", 55),
@@ -151,16 +153,19 @@ class TestPublicCommands(CommandCase):
 
 
 class TestStaffCommands(CommandCase):
-    async def test_xpost_announces_in_the_xp_channel_and_opens_a_window(self):
+    async def test_xpost_posts_an_engagement_card_in_the_xp_channel(self):
         i = self.inter()
         with mock.patch.object(xp_cog, "now_utc", return_value=NOW):
-            await cmd(xp_cog.XPCog.xpost)(self.cog, i, "https://x.com/G_NEXTGEN/status/5", "")
+            await cmd(xp_cog.XPCog.xpost)(self.cog, i, "https://x.com/G_NEXTGEN/status/5", "Push this one")
         send = self.channels[XP_CH].send.await_args
-        self.assertEqual(send.kwargs["content"], "<@&55>")
-        field = send.kwargs["embed"].fields[0].value
-        self.assertIn("<t:", field)
-        self.assertNotIn("> UTC", field)  # Discord timestamps show local time, so no "UTC" label after one
-        self.assertTrue(self.engine.within_official_window(xe.ts(NOW + datetime.timedelta(minutes=60))))
+        self.assertEqual(send.kwargs["content"], "<@&55> https://x.com/G_NEXTGEN/status/5")  # link in the text: Discord shows the post preview
+        embed = send.kwargs["embed"]
+        self.assertEqual(embed.description, "Push this one")
+        self.assertIn("Like +2, Retweet +3, Comment +5", embed.fields[0].value)
+        ids = [child.custom_id for child in send.kwargs["view"].children]
+        post_id = self.store.latest_official_post()["id"]
+        self.assertEqual(ids, [f"xpe:{post_id}:like", f"xpe:{post_id}:retweet", f"xpe:{post_id}:comment"])
+        self.assertIn("claim Like, Retweet and Comment points", i.followup.send.await_args.args[0])
 
     async def test_xpost_refuses_a_non_x_link_and_a_silent_channel_without_opening_a_window(self):
         i = self.inter()
@@ -295,34 +300,77 @@ class TestCycleReviewCommand(CommandCase):
 
 
 class TestLegacyStartup(CommandCase):
-    SUMMARY = {"imported": 13, "points": 5580, "already": 0, "excluded": 0, "stamp": "2026-10-05 00:00:00"}
+    SUMMARY = {"imported": 12, "points": 2580, "already": 0, "excluded": 0, "elite": 1, "stamp": "2026-10-05 00:00:00"}
 
-    async def test_import_runs_once_then_sets_the_done_flag(self):
+    def setUp(self):
+        self.elite_members = [SimpleNamespace(id=10), SimpleNamespace(id=11)]
+        self.elite_role = SimpleNamespace(id=777, position=5, members=self.elite_members)
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        guilds = mock.PropertyMock(return_value=[SimpleNamespace(get_role=lambda rid: self.elite_role if rid == 777 else None)])
+        guilds_patch = mock.patch.object(discord.Client, "guilds", guilds)
+        guilds_patch.start()
+        self.addCleanup(guilds_patch.stop)
+        self.cog.engine = mock.MagicMock()
+        self.cog.engine.import_legacy_xp.return_value = dict(self.SUMMARY)
         xp_cog.db.kv_get.return_value = None
-        engine = mock.MagicMock()
-        engine.import_legacy_xp.return_value = dict(self.SUMMARY)
-        self.assertEqual(xp_cog.run_legacy_import(engine)["points"], 5580)
-        engine.import_legacy_xp.assert_called_once()
-        xp_cog.db.kv_set.assert_called_once_with(xp_cog.LEGACY_FLAG, "1")
+        patch = mock.patch.object(config, "ELITE_ROLE_ID", 777)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    async def test_import_runs_once_with_the_elites_skipped_then_sets_the_done_flag(self):
+        await self.cog._run_legacy_import()
+        self.cog.engine.import_legacy_xp.assert_called_once()
+        self.assertEqual(self.cog.engine.import_legacy_xp.call_args.args[1], {10, 11})
+        xp_cog.db.kv_set.assert_called_once_with(self.cog.LEGACY_FLAG, "1")
+
+    async def test_it_waits_until_an_elite_role_is_configured(self):
+        with mock.patch.object(config, "ELITE_ROLE_ID", 0):
+            await self.cog._run_legacy_import()
+        self.cog.engine.import_legacy_xp.assert_not_called()
+        xp_cog.db.kv_set.assert_not_called()
+
+    async def test_it_waits_if_the_elite_role_is_not_in_the_server(self):
+        self.elite_role = None
+        await self.cog._run_legacy_import()
+        self.cog.engine.import_legacy_xp.assert_not_called()
+        xp_cog.db.kv_set.assert_not_called()
 
     async def test_nothing_happens_once_the_flag_is_set(self):
         xp_cog.db.kv_get.return_value = "1"
-        engine = mock.MagicMock()
-        self.assertIsNone(xp_cog.run_legacy_import(engine))
-        engine.import_legacy_xp.assert_not_called()
+        await self.cog._run_legacy_import()
+        self.cog.engine.import_legacy_xp.assert_not_called()
         xp_cog.db.kv_set.assert_not_called()
 
-    async def test_a_failed_import_never_stops_startup_and_is_retried_next_time(self):
-        xp_cog.db.kv_get.return_value = None
-        engine = mock.MagicMock()
-        engine.import_legacy_xp.side_effect = RuntimeError("table missing")
-        self.assertIsNone(xp_cog.run_legacy_import(engine))  # must not raise
-        xp_cog.db.kv_set.assert_not_called()                 # flag stays unset, so the next start retries
+    async def test_it_only_runs_once_per_process(self):
+        await self.cog._run_legacy_import()
+        await self.cog._run_legacy_import()
+        self.cog.engine.import_legacy_xp.assert_called_once()
 
-    async def test_the_founder_is_hidden_from_leaderboards(self):
-        hide = self.cog.hide_fn(self.guild)
-        self.assertTrue(hide(config.FOUNDER_ID))
-        self.assertFalse(hide(7))
+    async def test_a_failed_import_never_stops_startup_and_is_retried_next_time(self):
+        self.cog.engine.import_legacy_xp.side_effect = RuntimeError("table missing")
+        await self.cog._run_legacy_import()  # must not raise
+        xp_cog.db.kv_set.assert_not_called()  # flag stays unset
+        self.cog.engine.import_legacy_xp.side_effect = None
+        await self.cog._run_legacy_import()   # the next ready event retries
+        xp_cog.db.kv_set.assert_called_once()
+
+    async def test_the_founder_and_staff_are_hidden_from_leaderboards_but_elites_are_visible(self):
+        elite_member = member(20, roles=[777])
+        staff_member = member(21, roles=[888])
+        both = {20: elite_member, 21: staff_member}
+        self.guild.get_member = lambda uid: both.get(uid) or member(uid)
+        with mock.patch.object(config, "IMMUNE_ROLE_IDS", {777, 888}):
+            hide = self.cog.hide_fn(self.guild)
+            self.assertFalse(hide(20))              # Elite: visible
+            self.assertTrue(hide(21))               # another immune role: hidden
+            self.assertTrue(hide(config.FOUNDER_ID))
+            self.assertFalse(hide(7))
+        with mock.patch.object(config, "IMMUNE_ROLE_IDS", {777, 888}), mock.patch.object(config, "ELITE_ROLE_ID", 0):
+            self.assertTrue(self.cog.hide_fn(self.guild)(20))   # no Elite role configured: hidden as before
+        self.guild.get_member = lambda uid: None if uid == 30 else member(uid)
+        self.assertTrue(self.cog.hide_fn(self.guild)(30))        # left the server
 
 
 class TestIntakeGuards(CommandCase):

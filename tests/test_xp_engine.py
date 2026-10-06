@@ -470,10 +470,21 @@ class TestIntake(unittest.TestCase):
         self.assertTrue(r.ok)
         self.assertEqual((r.lesson_day, r.subtype), (12, "lesson"))
 
-    def test_needs_a_link_or_an_attachment(self):
-        self.assertEqual(xe.check_intake("build", "look at my thing", 0).reply, xe.MSG_NEEDS_PROOF)
-        self.assertTrue(xe.check_intake("build", "look at my thing", 1).ok)
-        self.assertTrue(xe.check_intake("build", "see https://example.com/x", 0).ok)
+    def test_builder_channels_take_text_only_posts_and_ignore_one_word_chatter(self):
+        for key in ("build", "tutorial", "prompt_result"):
+            r = xe.check_intake(key, "task completed, shipped the landing page", 0)
+            self.assertTrue(r.ok, key)
+            self.assertTrue(r.text_only, key)
+            self.assertIsNone(r.url_key)
+            quick = xe.check_intake(key, "ok thx", 0)
+            self.assertEqual((quick.ok, quick.code, quick.reply), (False, "ignore", ""), key)
+        self.assertFalse(xe.check_intake("build", "look at my thing", 1).text_only)  # has a screenshot
+        self.assertFalse(xe.check_intake("build", "see https://example.com/x", 0).text_only)
+
+    def test_academy_and_reach_still_need_a_link_or_attachment(self):
+        self.assertEqual(xe.check_intake("academy", "Day 3 done and dusted", 0).reply, xe.MSG_NEEDS_PROOF)
+        self.assertTrue(xe.check_intake("academy", "Day 3 done", 1).ok)
+        self.assertEqual(xe.check_intake("reach", "my post about NEXTGEN", 1).reply, xe.MSG_NEEDS_PROOF)
 
     def test_reach_needs_an_x_status_link(self):
         self.assertFalse(xe.check_intake("reach", "https://example.com/post", 0).ok)
@@ -628,6 +639,7 @@ class TestLeaderboardAndReview(Base):
 
 class TestLegacyImport(Base):
     OLD = [(10, 1, 3000), (11, 1, 860), (12, 1, 535), (13, 1, 10)]
+    ELITES = {10}   # member 10 holds the Elite role
 
     def setUp(self):
         super().setUp()
@@ -638,63 +650,189 @@ class TestLegacyImport(Base):
     def old_rows(self):
         return self.s._all("SELECT user_id, guild_id, xp FROM member_xp ORDER BY user_id")
 
-    def test_old_balances_become_reach_xp_stamped_at_the_start_of_the_current_cycle(self):
-        res = self.e.import_legacy_xp(dt(2026, 10, 6, 9))
-        self.assertEqual((res["imported"], res["points"], res["already"], res["excluded"]), (4, 4405, 0, 0))
+    def run_import(self, when=dt(2026, 10, 6, 9)):
+        return self.e.import_legacy_xp(when, skip_ids=self.ELITES)
+
+    def test_old_balances_become_builder_xp_stamped_at_the_start_of_the_current_cycle(self):
+        res = self.run_import()
+        self.assertEqual((res["imported"], res["points"], res["already"], res["excluded"]), (3, 1405, 0, 0))
         self.assertEqual(res["stamp"], "2026-10-05 00:00:00")
         row = self.s.get_award("legacy:1:11")
         self.assertEqual((row["lane"], row["category"], row["points"], row["created_at"], row["submission_id"]),
-                         ("reach", "legacy_import", 860, "2026-10-05 00:00:00", None))
-        self.assertEqual(self.pts(11, "reach"), 860)
-        self.assertEqual(self.pts(11, "builder"), 0)
-        self.assertEqual(self.s.get_award("legacy:1:14"), None)  # a zero balance is not imported
+                         ("builder", "legacy_import", 860, "2026-10-05 00:00:00", None))
+        self.assertEqual(self.pts(11, "builder"), 860)
+        self.assertEqual(self.pts(11, "reach"), 0)
+        self.assertIsNone(self.s.get_award("legacy:1:14"))  # a zero balance is not imported
+
+    def test_elites_start_from_zero(self):
+        res = self.run_import()
+        self.assertEqual(res["elite"], 1)
+        self.assertIsNone(self.s.get_award("legacy:1:10"))
+        self.assertEqual(self.pts(10), 0)  # the old 3,000 is not carried over for an Elite
 
     def test_it_is_idempotent(self):
-        first = self.e.import_legacy_xp(dt(2026, 10, 6))
-        again = self.e.import_legacy_xp(dt(2026, 10, 7))
-        self.assertEqual((again["imported"], again["already"], again["points"]), (0, 4, 0))
-        self.assertEqual(self.pts(10, "reach"), 3000)
+        first = self.run_import()
+        again = self.run_import(dt(2026, 10, 7))
+        self.assertEqual((again["imported"], again["already"], again["points"]), (0, 3, 0))
+        self.assertEqual(self.pts(11, "builder"), 860)
         self.assertEqual(sum(r["pts"] for r in self.s.lane_totals("0", "9")), first["points"])
 
     def test_a_later_import_is_stamped_in_the_cycle_it_runs_in(self):
-        res = self.e.import_legacy_xp(dt(2026, 10, 20))
+        res = self.run_import(dt(2026, 10, 20))
         self.assertEqual(res["stamp"], "2026-10-19 00:00:00")
-        self.assertEqual(self.pts(11, "reach", *self.e.cycle_range(1)), 860)
-        self.assertEqual(self.pts(11, "reach", *self.e.cycle_range(0)), 0)
+        self.assertEqual(self.pts(11, "builder", *self.e.cycle_range(1)), 860)
+        self.assertEqual(self.pts(11, "builder", *self.e.cycle_range(0)), 0)
 
     def test_excluded_members_are_skipped(self):
         self.s.exclude(11, "test")
-        res = self.e.import_legacy_xp(dt(2026, 10, 6))
-        self.assertEqual((res["imported"], res["excluded"]), (3, 1))
+        res = self.run_import()
+        self.assertEqual((res["imported"], res["excluded"]), (2, 1))
         self.assertEqual(self.pts(11), 0)
 
     def test_the_old_table_is_left_exactly_as_it_was(self):
         before = self.old_rows()
-        self.e.import_legacy_xp(dt(2026, 10, 6))
+        self.run_import()
         self.assertEqual(self.old_rows(), before)
 
-    def test_imported_xp_shows_on_leaderboards_and_in_the_cycle_review_as_reach_only(self):
-        self.e.import_legacy_xp(dt(2026, 10, 6))
-        board = self.e.leaderboard("reach", "cycle", dt(2026, 10, 6), hide=lambda u: u == 10)
+    def test_imported_xp_shows_on_the_builder_board_only_and_an_elite_can_still_appear_by_earning(self):
+        self.run_import()
+        board = self.e.leaderboard("builder", "cycle", dt(2026, 10, 6))
         self.assertEqual([(r, u, p) for r, u, p in board], [(1, 11, 860), (2, 12, 535), (3, 13, 10)])
-        self.assertEqual(self.e.leaderboard("builder", "cycle", dt(2026, 10, 6)), [])
-        review = self.e.cycle_review(dt(2026, 10, 6), hide=lambda u: u == 10)
-        self.assertEqual(review["selected"], [])                                  # Reach alone is not enough
-        self.assertEqual(sorted(x["user_id"] for x in review["near_misses"]), [11, 12])   # one lane met
-        self.assertTrue(all(x["missing"] == "builder" for x in review["near_misses"]))
-        self.assertEqual(review["top_reach"]["user_id"], 11)
+        self.assertEqual(self.e.leaderboard("reach", "cycle", dt(2026, 10, 6)), [])
+        # the Elite is visible as soon as they earn something, starting from zero
+        self.approve(self.post(10, "build", dt(2026, 10, 7)), "build_demo")
+        board = self.e.leaderboard("builder", "cycle", dt(2026, 10, 8))
+        self.assertIn((3, 10, 20), board)
+
+    def test_imported_builder_xp_alone_does_not_make_the_shortlist(self):
+        self.run_import()
+        review = self.e.cycle_review(dt(2026, 10, 6), is_elite=lambda u: u in self.ELITES)
+        self.assertEqual(review["selected"], [])
+        self.assertEqual(sorted(x["user_id"] for x in review["near_misses"]), [11, 12])
+        self.assertTrue(all(x["missing"] == "reach" for x in review["near_misses"]))
+        self.assertEqual(review["top_builder"]["user_id"], 11)
+
+    def test_a_member_who_then_earns_reach_xp_qualifies(self):
+        self.run_import()
+        for n in range(4):  # 4 x 25 = 100 Reach
+            self.approve(self.post(11, "reach", dt(2026, 10, 7 + n), url=f"x.com/a/status/{n}"), "post_original")
+        review = self.e.cycle_review(dt(2026, 10, 12), is_elite=lambda u: u in self.ELITES)
+        self.assertEqual([x["user_id"] for x in review["selected"]], [11])
+        self.assertEqual((review["selected"][0]["reach"], review["selected"][0]["builder"]), (100, 860))
 
     def test_imported_xp_does_not_use_up_daily_caps_or_trigger_bonuses(self):
-        self.e.import_legacy_xp(dt(2026, 10, 5, 12))
+        self.run_import(dt(2026, 10, 5, 12))
         res = self.approve(self.post(11, "reach", dt(2026, 10, 5, 13), url="x.com/a/status/1"), "official_engage")
         self.assertEqual((res.awards[0].points, res.bonuses), (10, []))
 
-    def test_a_member_who_then_earns_builder_xp_qualifies(self):
-        self.e.import_legacy_xp(dt(2026, 10, 6))
-        self.approve(self.post(11, "tutorial", dt(2026, 10, 7), url="example.com/t"), "tutorial_exceptional")  # +100 builder
-        review = self.e.cycle_review(dt(2026, 10, 8), hide=lambda u: u == 10)
-        self.assertEqual([x["user_id"] for x in review["selected"]], [11])
-        self.assertEqual((review["selected"][0]["reach"], review["selected"][0]["builder"]), (860, 100))
+
+class TestEngagementClaims(Base):
+    def setUp(self):
+        super().setUp()
+        self.post_id, _ = self.e.open_official_post("https://x.com/G_NEXTGEN/status/1", MON)
+
+    def claim(self, user, action, when=MON, post=None, handle="someone", proof=""):
+        return self.e.claim_engagement(1, post or self.post_id, user, action, handle, proof, when)
+
+    def test_each_button_is_worth_its_configured_points(self):
+        got = {}
+        for action in ("like", "retweet", "comment"):
+            status, cid = self.claim(7, action)
+            self.assertEqual(status, "pending")
+            res = self.e.approve_claim(cid, REVIEWER, MON)
+            got[action] = (res.ok, res.awards[0].points, res.awards[0].lane, res.awards[0].category)
+        self.assertEqual(got, {"like": (True, 2, "reach", "official_like"),
+                               "retweet": (True, 3, "reach", "official_retweet"),
+                               "comment": (True, 5, "reach", "official_comment")})
+        self.assertEqual(self.pts(7, "reach"), 10)   # a fully engaged post is worth 10
+        self.assertEqual(self.pts(7, "builder"), 0)
+
+    def test_nothing_is_awarded_until_a_moderator_approves(self):
+        status, cid = self.claim(7, "comment")
+        self.assertEqual(self.pts(7), 0)
+        self.assertEqual(self.s.get_claim(cid)["status"], "pending")
+        self.e.approve_claim(cid, REVIEWER, MON)
+        self.assertEqual(self.pts(7, "reach"), 5)
+
+    def test_one_live_claim_per_member_post_and_action(self):
+        _, cid = self.claim(7, "like")
+        again = self.claim(7, "like")
+        self.assertEqual(again, ("exists", "pending"))
+        self.e.approve_claim(cid, REVIEWER, MON)
+        self.assertEqual(self.claim(7, "like"), ("exists", "approved"))
+        # a different action, member or post is fine
+        self.assertEqual(self.claim(7, "retweet")[0], "pending")
+        self.assertEqual(self.claim(8, "like")[0], "pending")
+        other, _ = self.e.open_official_post("https://x.com/G_NEXTGEN/status/2", MON)
+        self.assertEqual(self.claim(7, "like", post=other)[0], "pending")
+
+    def test_double_click_on_approve_pays_once(self):
+        _, cid = self.claim(7, "comment")
+        first = self.e.approve_claim(cid, REVIEWER, MON)
+        second = self.e.approve_claim(cid, REVIEWER, MON)
+        self.assertEqual((first.ok, second.ok, second.error), (True, False, "not_pending"))
+        self.assertEqual(self.pts(7), 5)
+        self.assertIsNotNone(self.s.get_award(f"claim:{cid}"))
+
+    def test_declined_claims_pay_nothing_and_can_be_tried_again(self):
+        _, cid = self.claim(7, "retweet")
+        self.assertTrue(self.e.decline_claim(cid, REVIEWER, MON))
+        self.assertFalse(self.e.decline_claim(cid, REVIEWER, MON))
+        self.assertEqual(self.e.approve_claim(cid, REVIEWER, MON).error, "not_pending")
+        self.assertEqual(self.pts(7), 0)
+        status, cid2 = self.claim(7, "retweet")
+        self.assertEqual(status, "pending")
+        self.assertNotEqual(cid, cid2)
+
+    def test_the_daily_official_engagement_cap_is_shared_with_claims(self):
+        self.s.insert_award(guild_id=1, user_id=7, lane="reach", category="official_engage", points=29, reason="",
+                            submission_id=None, award_key="seed", awarded_by=0, created_at=xe.ts(MON))
+        _, cid = self.claim(7, "comment")
+        a = self.e.approve_claim(cid, REVIEWER, MON).awards[0]
+        self.assertEqual(a.points, 1)
+        self.assertIn("trimmed to the daily cap", a.notes)
+        _, cid2 = self.claim(7, "like")
+        self.assertEqual(self.e.approve_claim(cid2, REVIEWER, MON).awards[0].points, 0)
+
+    def test_a_claim_counts_for_the_day_it_was_made_not_the_day_it_was_approved(self):
+        _, cid = self.claim(7, "comment", when=dt(2026, 10, 18, 23, 59, 59))
+        self.e.approve_claim(cid, REVIEWER, dt(2026, 10, 19, 9))
+        self.assertEqual(self.pts(7, "reach", *self.e.cycle_range(0)), 5)
+        self.assertEqual(self.pts(7, "reach", *self.e.cycle_range(1)), 0)
+
+    def test_excluded_members_cannot_claim_and_nothing_is_paid_if_excluded_later(self):
+        self.s.exclude(7, "test")
+        self.assertEqual(self.claim(7, "like")[0], "excluded")
+        _, cid = self.claim(8, "like")
+        self.s.exclude(8, "test")
+        self.assertEqual(self.e.approve_claim(cid, REVIEWER, MON).awards[0].points, 0)
+
+    def test_unknown_posts_and_actions_are_refused(self):
+        self.assertEqual(self.claim(7, "like", post=999)[0], "no_post")
+        self.assertEqual(self.claim(7, "share")[0], "invalid")
+
+    def test_a_failed_award_puts_the_claim_back_to_pending(self):
+        _, cid = self.claim(7, "like")
+        original = self.e._grant_claim
+        self.e._grant_claim = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+        with self.assertRaises(RuntimeError):
+            self.e.approve_claim(cid, REVIEWER, MON)
+        self.e._grant_claim = original
+        self.assertEqual(self.s.get_claim(cid)["status"], "pending")
+        self.assertTrue(self.e.approve_claim(cid, REVIEWER, MON).ok)
+
+    def test_x_usernames_are_parsed_from_handles_and_profile_links(self):
+        for text in ("@Sonofpeace", "Sonofpeace", "  @Sonofpeace ", "https://x.com/Sonofpeace",
+                     "https://twitter.com/Sonofpeace/", "https://x.com/Sonofpeace/status/1?s=20"):
+            self.assertEqual(xe.parse_x_handle(text), "Sonofpeace", text)
+        for text in ("", "two words", "@toolongusername1234", "https://example.com/me", "a-b"):
+            self.assertIsNone(xe.parse_x_handle(text), text)
+
+    def test_the_claim_rows_are_idempotent_at_the_database_level(self):
+        # the partial unique index lets a second live claim through only after a decline
+        self.s.add_claim(guild_id=1, post_id=self.post_id, user_id=9, action="like", handle="h", proof="", created_at=xe.ts(MON))
+        self.assertIsNone(self.s.add_claim(guild_id=1, post_id=self.post_id, user_id=9, action="like", handle="h",
+                                           proof="", created_at=xe.ts(MON)))
 
 
 class TestConfigData(unittest.TestCase):
@@ -709,6 +847,7 @@ class TestConfigData(unittest.TestCase):
             "tutorial_exceptional": 100, "prompt_result": 10, "prompt_detailed": 20, "prompt_workflow": 30,
             "event_attend": 10, "event_participate": 15, "event_facilitate": 25, "help_new_member": 15,
             "help_academy_task": 15, "teach_skill": 25, "learn_together": 10, "weekly_challenge_build": 25,
+            "official_like": 2, "official_retweet": 3, "official_comment": 5,
         }
         self.assertEqual({k: v["points"] for k, v in c.items()}, expect)
         self.assertEqual(pc.DAILY_CAPS["official_engage"]["limit"], 30)

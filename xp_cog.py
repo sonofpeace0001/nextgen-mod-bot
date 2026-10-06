@@ -8,9 +8,11 @@ Everything runs on UTC.
 """
 from __future__ import annotations
 
+import asyncio
 import datetime
 import hashlib
 import logging
+import re
 
 import discord
 from discord import app_commands
@@ -18,7 +20,6 @@ from discord.ext import commands, tasks
 
 import config
 import database as db
-import moderation
 import points_config as pc
 import tickets
 import xp_engine as xe
@@ -49,27 +50,41 @@ def now_utc():
 # ---------------------------------------------------------------------------
 
 
-def is_staff(member) -> bool:
+def is_above_elite(member, guild=None) -> bool:
+    """Who may review proof, verify claims, post official posts and run staff commands: the
+    founder, Administrators, anyone in STAFF_ROLE_IDS, and anyone whose highest role sits above
+    the Elite role in the server's role list. Elites themselves do not qualify. With no Elite
+    role configured it falls back to the immune roles (who counted as staff before this)."""
     if member.id == config.FOUNDER_ID:
         return True
     perms = getattr(member, "guild_permissions", None)
     if perms and perms.administrator:
         return True
-    ids = config.STAFF_ROLE_IDS or config.IMMUNE_ROLE_IDS
-    return any(r.id in ids for r in getattr(member, "roles", []))
+    roles = getattr(member, "roles", [])
+    if any(r.id in config.STAFF_ROLE_IDS for r in roles):
+        return True
+    guild = guild or getattr(member, "guild", None)
+    elite = guild.get_role(config.ELITE_ROLE_ID) if (guild is not None and config.ELITE_ROLE_ID) else None
+    if elite is not None:
+        return max((r.position for r in roles), default=0) > elite.position
+    return any(r.id in config.IMMUNE_ROLE_IDS for r in roles)
 
 
-def is_reviewer(member) -> bool:
-    if is_staff(member):
+def is_staff(member, guild=None) -> bool:
+    return is_above_elite(member, guild)
+
+
+def is_reviewer(member, guild=None) -> bool:
+    if is_above_elite(member, guild):
         return True
     return any(r.id in config.REVIEWER_ROLE_IDS for r in getattr(member, "roles", []))
 
 
 def staff_only():
     async def pred(interaction: discord.Interaction):
-        if is_staff(interaction.user):
+        if is_staff(interaction.user, interaction.guild):
             return True
-        await interaction.response.send_message("You need a staff role to use this.", ephemeral=True)
+        await interaction.response.send_message("You need a role above Elite to use this.", ephemeral=True)
         return False
     return app_commands.check(pred)
 
@@ -104,8 +119,8 @@ def _plural(n, word):
 # ---------------------------------------------------------------------------
 
 
-class RejectModal(discord.ui.Modal, title="Reject proof"):
-    reason = discord.ui.TextInput(label="Reason", max_length=120, required=True,
+class RejectModal(discord.ui.Modal, title="Decline proof"):
+    reason = discord.ui.TextInput(label="Reason (optional)", max_length=120, required=False,
                                   placeholder="Short reason the member will see")
 
     def __init__(self, cog, sid):
@@ -114,16 +129,16 @@ class RejectModal(discord.ui.Modal, title="Reject proof"):
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        text = str(self.reason).strip().rstrip(".") or "no reason given"
+        text = str(self.reason).strip().rstrip(".") or "not enough proof"
         sub = self.cog.store.get_submission(self.sid)
         if not sub or not self.cog.engine.reject(self.sid, interaction.user.id, text, now_utc()):
             await interaction.followup.send(ERRORS["not_pending"], ephemeral=True)
             return
-        await self.cog.reply_to_proof(interaction.guild, sub, f"Not approved: {text}.")
-        await self.cog.finalise_card(sub, color=discord.Color.red(),
-                                     footer=f"Rejected by {interaction.user}", result=text)
+        await self.cog.finish_review(
+            interaction.guild, sub, member_text=f"Not approved: {text}.", color=discord.Color.red(),
+            footer=f"Declined by {interaction.user}", result=text)
         db.log_action(sub["guild_id"], "POINTS REJECTED", sub["user_id"], str(interaction.user), text[:200])
-        await interaction.followup.send("Rejected.", ephemeral=True)
+        await interaction.followup.send("Declined.", ephemeral=True)
 
 
 class ReviewView(discord.ui.View):
@@ -147,7 +162,7 @@ class ReviewView(discord.ui.View):
         self.add_item(select)
         for name, label, style, cb in (
             ("approve", "Approve", discord.ButtonStyle.green, self.on_approve),
-            ("reject", "Reject", discord.ButtonStyle.red, self.on_reject),
+            ("reject", "Decline", discord.ButtonStyle.red, self.on_reject),
             ("zero", "Zero points (spam)", discord.ButtonStyle.secondary, self.on_zero),
         ):
             btn = discord.ui.Button(custom_id=f"xpr:{sid}:{name}", label=label, style=style, row=1)
@@ -157,8 +172,9 @@ class ReviewView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         member = interaction.user
-        if not is_reviewer(member):
-            await interaction.response.send_message("Only reviewers can use these controls.", ephemeral=True)
+        if not is_reviewer(member, interaction.guild):
+            await interaction.response.send_message(
+                "Only moderators with a role above Elite can use these controls.", ephemeral=True)
             return False
         sub = self.cog.store.get_submission(self.sid)
         if sub:
@@ -194,13 +210,13 @@ class ReviewView(discord.ui.View):
         if not res.ok:
             await interaction.followup.send(ERRORS.get(res.error, "Could not approve that."), ephemeral=True)
             return
-        await self.cog.reply_to_proof(interaction.guild, sub, self.cog.approval_text(res))
         total = sum(a.points for a in res.awards)
-        await self.cog.finalise_card(
-            sub, color=discord.Color.green(), footer=f"Approved by {interaction.user}",
-            result=self.cog.card_result(res))
+        await self.cog.finish_review(
+            interaction.guild, sub, member_text=self.cog.approval_text(res), color=discord.Color.green(),
+            footer=f"Approved by {interaction.user}", result=self.cog.card_result(res))
         db.log_action(sub["guild_id"], "POINTS APPROVED", sub["user_id"], str(interaction.user),
                       ", ".join(f"{a.category} +{a.points}" for a in res.awards)[:200])
+        self.cog.request_board_refresh()
         await interaction.followup.send(f"Approved. {total} points awarded.", ephemeral=True)
 
     async def on_reject(self, interaction: discord.Interaction):
@@ -213,14 +229,83 @@ class ReviewView(discord.ui.View):
         if strikes is None:
             await interaction.followup.send(ERRORS["not_pending"], ephemeral=True)
             return
-        await self.cog.finalise_card(sub, color=discord.Color.dark_grey(),
-                                     footer=f"Zero points by {interaction.user}",
-                                     result=f"Marked as spam. Strike {strikes}.")
+        await self.cog.finish_review(
+            interaction.guild, sub, member_text="No points awarded for this one.", color=discord.Color.dark_grey(),
+            footer=f"Zero points by {interaction.user}", result=f"Marked as spam. Strike {strikes}.", tell_member=False)
         db.log_action(sub["guild_id"], "POINTS ZEROED", sub["user_id"], str(interaction.user), f"strike {strikes}")
         if strikes >= pc.STRIKE_ALERT_AT:
             await self.cog.staff_alert(
                 f"<@{sub['user_id']}> now has {_plural(strikes, 'strike')} for spam proof. Please take a look.")
         await interaction.followup.send(f"Zero points recorded. That is strike {strikes}.", ephemeral=True)
+
+
+class EngageButton(discord.ui.DynamicItem[discord.ui.Button],
+                   template=r"xpe:(?P<post>[0-9]+):(?P<action>like|retweet|comment)"):
+    """Like, Retweet or Comment on an official post card. Persistent with no per-post
+    registration: discord.py rebuilds the button from its custom id after a restart."""
+
+    def __init__(self, post_id, action):
+        points = pc.CATEGORIES[pc.ENGAGE["actions"][action]]["points"]
+        super().__init__(discord.ui.Button(
+            label=f"{pc.ENGAGE['button_labels'][action]} (+{points})", style=discord.ButtonStyle.primary,
+            custom_id=f"xpe:{post_id}:{action}"))
+        self.post_id, self.action = post_id, action
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match, /):
+        return cls(int(match["post"]), match["action"])
+
+    async def callback(self, interaction: discord.Interaction):
+        cog = interaction.client.get_cog("XPCog")
+        if cog:
+            await cog.on_engage(interaction, self.post_id, self.action)
+
+
+class ClaimButton(discord.ui.DynamicItem[discord.ui.Button],
+                  template=r"xpc:(?P<claim>[0-9]+):(?P<verb>approve|decline)"):
+    """Approve or Decline on a claim card in the mod channel."""
+
+    def __init__(self, claim_id, verb):
+        super().__init__(discord.ui.Button(
+            label="Approve" if verb == "approve" else "Decline",
+            style=discord.ButtonStyle.green if verb == "approve" else discord.ButtonStyle.red,
+            custom_id=f"xpc:{claim_id}:{verb}"))
+        self.claim_id, self.verb = claim_id, verb
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match, /):
+        return cls(int(match["claim"]), match["verb"])
+
+    async def callback(self, interaction: discord.Interaction):
+        cog = interaction.client.get_cog("XPCog")
+        if cog:
+            await cog.on_claim_review(interaction, self.claim_id, self.verb)
+
+
+class HandleModal(discord.ui.Modal, title="Link your X account"):
+    handle = discord.ui.TextInput(label="Your X username", max_length=60, placeholder="@yourname")
+    proof = discord.ui.TextInput(label="Link to your reply or repost (optional)", required=False, max_length=300)
+
+    def __init__(self, cog, post_id, action):
+        super().__init__()
+        self.cog, self.post_id, self.action = cog, post_id, action
+
+    async def on_submit(self, interaction: discord.Interaction):
+        handle = xe.parse_x_handle(str(self.handle))
+        if not handle:
+            await interaction.response.send_message(
+                "That does not look like an X username. Press the button again and re-enter it.", ephemeral=True)
+            return
+        self.cog.store.set_handle(interaction.user.id, handle)
+        await interaction.response.defer(ephemeral=True)
+        await self.cog.submit_claim(interaction, self.post_id, self.action, handle, str(self.proof).strip())
+
+
+def engage_view(post_id):
+    view = discord.ui.View(timeout=None)
+    for action in pc.ENGAGE["actions"]:
+        view.add_item(EngageButton(post_id, action))
+    return view
 
 
 class LeaderboardView(discord.ui.View):
@@ -263,9 +348,12 @@ class XPCog(commands.Cog):
         # guild id -> {code: {"uses", "max", "inviter", "gone"}}
         self._invites = {}
         self._invites_ok = {}
+        self._board_task = None
+        self._legacy_checked = False
 
     # ---- lifecycle -------------------------------------------------------
     async def cog_load(self):
+        self.bot.add_dynamic_items(EngageButton, ClaimButton)
         # One bad row (for example a card whose channel is no longer a proof channel) must
         # never stop the whole bot from starting.
         for sub in self.store.pending_with_cards():
@@ -289,6 +377,9 @@ class XPCog(commands.Cog):
                 log.warning("%s is not set, so that proof channel is off.", name)
         if not config.STAFF_REVIEW_CHANNEL_ID:
             log.warning("No STAFF_REVIEW_CHANNEL_ID, STAFF_CHANNEL_ID or LOG_CHANNEL_ID: review cards cannot be posted.")
+        if not config.ELITE_ROLE_ID:
+            log.warning("ELITE_ROLE_ID is not set: 'above Elite' falls back to the immune roles, Elites are hidden from "
+                        "leaderboards, and the legacy XP import is waiting.")
         log.info("Points ready. Proof channels: %s. Cycle %s (starts %s, %s days).",
                  config.PROOF_CHANNELS, self.engine.cycle_of(now_utc()),
                  self.engine.rules.cycle_start, self.engine.rules.cycle_length)
@@ -304,11 +395,45 @@ class XPCog(commands.Cog):
                     log.warning("Proof channel %s (#%s) is in the ignored, announcement or ticket list, "
                                 "so the bot stays silent there and proof intake is off.", key, ch.name)
             await self._cache_invites(g)
+        await self._run_legacy_import()
         if not self._hourly.is_running():
             self._hourly.start()
-        if config.XP_LEADERBOARD_ENABLED and config.XP_ANNOUNCE_CHANNEL_ID and not self._daily_board.is_running():
+        boards = config.BUILD_LEADERBOARD_CHANNEL_ID or config.REACH_LEADERBOARD_CHANNEL_ID
+        if config.XP_LEADERBOARD_ENABLED and (boards or config.XP_ANNOUNCE_CHANNEL_ID) and not self._daily_board.is_running():
             self._daily_board.start()
             log.info("Daily points leaderboard started (%02d:00 UTC).", config.XP_LEADERBOARD_HOUR)
+        await self.update_boards()
+
+    LEGACY_FLAG = "points_legacy_import_done"
+
+    async def _run_legacy_import(self):
+        """One-time import of the old XP balances as Builder XP. Elites start from zero, so it
+        needs to know who they are and waits until ELITE_ROLE_ID is set. Safe to run at every
+        start (a done flag, plus a unique ledger key per member). A failure is logged and
+        retried at the next start; it never stops the bot."""
+        if self._legacy_checked:
+            return
+        self._legacy_checked = True
+        try:
+            if db.kv_get(self.LEGACY_FLAG) == "1":
+                return
+            if not config.ELITE_ROLE_ID:
+                log.warning("Legacy XP import is waiting for ELITE_ROLE_ID (Elites start from zero).")
+                return
+            roles = [g.get_role(config.ELITE_ROLE_ID) for g in self.bot.guilds]
+            roles = [r for r in roles if r is not None]
+            if not roles:
+                log.warning("ELITE_ROLE_ID %s was not found in the server; legacy XP import is waiting.", config.ELITE_ROLE_ID)
+                return
+            elite = {m.id for r in roles for m in r.members}
+            res = self.engine.import_legacy_xp(now_utc(), elite)
+            db.kv_set(self.LEGACY_FLAG, "1")
+            log.info("Legacy XP import: %s members, %s Builder XP added (%s Elites start from zero, %s already "
+                     "imported, %s excluded), stamped %s UTC.", res["imported"], res["points"], res["elite"],
+                     res["already"], res["excluded"], res["stamp"])
+        except Exception:
+            self._legacy_checked = False
+            log.exception("Legacy XP import failed; it will be retried at the next ready event.")
 
     async def cog_unload(self):
         self._hourly.cancel()
@@ -338,8 +463,32 @@ class XPCog(commands.Cog):
         except Exception as e:
             log.error("proof reply failed: %s", e)
 
+    def _card_channel(self, sub):
+        return self.bot.get_channel(sub["review_channel_id"] or config.STAFF_REVIEW_CHANNEL_ID)
+
+    async def finish_review(self, guild, sub, *, member_text, color, footer, result=None, tell_member=True):
+        """Close out a review card. A card that lives in the proof channel is edited to show the
+        outcome (that edit is the member's reply). A staff channel card is edited, and the member
+        is answered under their post."""
+        in_channel = bool(sub["review_channel_id"]) and sub["review_channel_id"] == sub["channel_id"]
+        if not in_channel:
+            await self.finalise_card(sub, color=color, footer=footer, result=result)
+            if tell_member:
+                await self.reply_to_proof(guild, sub, member_text)
+            return
+        ch = self._card_channel(sub)
+        if not ch or not sub["review_message_id"]:
+            return
+        try:
+            msg = await ch.fetch_message(sub["review_message_id"])
+            e = discord.Embed(color=color)
+            e.set_footer(text=footer)
+            await msg.edit(content=member_text, embed=e, view=None)
+        except Exception as ex:
+            log.error("could not update review card %s: %s", sub["review_message_id"], ex)
+
     async def finalise_card(self, sub, *, color, footer, result=None):
-        ch = self.bot.get_channel(config.STAFF_REVIEW_CHANNEL_ID)
+        ch = self._card_channel(sub)
         if not ch or not sub["review_message_id"]:
             return
         try:
@@ -381,12 +530,15 @@ class XPCog(commands.Cog):
         return "\n".join(lines) or "Approved."
 
     def hide_fn(self, guild):
-        """Hidden from leaderboards: the founder, people who left, and immune-role holders (Elite, staff)."""
+        """Hidden from leaderboards: the founder, people who left, and holders of an immune role
+        other than Elite (staff and admins). Elites are visible."""
         def hide(uid):
             if uid == config.FOUNDER_ID:
                 return True
             m = guild.get_member(uid)
-            return m is None or moderation._is_immune(m)
+            if m is None:
+                return True
+            return any(r.id in config.IMMUNE_ROLE_IDS and r.id != config.ELITE_ROLE_ID for r in m.roles)
         return hide
 
     # ---- intake ----------------------------------------------------------
@@ -400,6 +552,11 @@ class XPCog(commands.Cog):
         if is_silent_channel(message.channel):
             return  # the bot sends nothing in announcement, ignored or ticket channels
         try:
+            if key == "reach" and is_above_elite(message.author, message.guild):
+                link = next((l for l in xe.find_links(message.content) if xe.is_x_status_link(l)), None)
+                if link:
+                    await self._convert_official(message, link)
+                    return
             await self._intake(message, key)
         except Exception:
             log.exception("proof intake failed for message %s", message.id)
@@ -429,6 +586,8 @@ class XPCog(commands.Cog):
         check = xe.check_intake(key, message.content, len(message.attachments))
 
         if not check.ok:
+            if check.code == "ignore":
+                return  # a quick one-liner in a Builder channel: not a submission, no reply
             if check.store_rejected:
                 self.store.add_submission(
                     guild_id=message.guild.id, user_id=uid, channel_id=message.channel.id,
@@ -455,8 +614,30 @@ class XPCog(commands.Cog):
             guild_id=message.guild.id, user_id=uid, channel_id=message.channel.id, message_id=message.id,
             lane=lane, lesson_day=check.lesson_day, content_hash=content_hash, url_key=check.url_key,
             within_window=within, created_at=created, flags=",".join(flags))
+        if key in config.REVIEW_IN_CHANNEL_KEYS and await self._post_inline_card(message, sid, key, check, flags):
+            return
         await self._reply(message, xe.MSG_RECEIVED)
         await self._post_card(message, sid, key, check, flags, within)
+
+    async def _post_inline_card(self, message, sid, key, check, flags):
+        """The review buttons (category menu, Approve, Decline) go right under the member's post,
+        for moderators above Elite. Returns False if that reply failed, so the caller can fall
+        back to a card in the staff channel."""
+        view = ReviewView(self, sid, key, check.subtype)
+        try:
+            card = await message.reply(xe.MSG_RECEIVED, view=view, mention_author=False)
+        except Exception as ex:
+            log.error("Could not put review buttons under submission %s: %s", sid, ex)
+            return False
+        self.store.set_review_message(sid, card.id, message.channel.id)
+        notes = []
+        if "new_account" in flags:
+            notes.append(f"New account (under {config.MIN_ACCOUNT_AGE_DAYS} days old).")
+        if "suspect" in flags:
+            notes.append("Matches earlier proof that was rejected or withdrawn.")
+        if notes:  # kept out of the public channel, staff still get told
+            await self.staff_alert(f"Review note for <@{message.author.id}>, {message.jump_url}: " + " ".join(notes))
+        return True
 
     async def _post_card(self, message, sid, key, check, flags, within):
         ch = self.bot.get_channel(config.STAFF_REVIEW_CHANNEL_ID)
@@ -486,7 +667,7 @@ class XPCog(commands.Cog):
         view = ReviewView(self, sid, key, check.subtype)
         try:
             msg = await ch.send(embed=e, view=view)
-            self.store.set_review_message(sid, msg.id)
+            self.store.set_review_message(sid, msg.id, ch.id)
         except Exception as ex:
             log.error("Failed to post review card for submission %s: %s", sid, ex)
 
@@ -505,12 +686,245 @@ class XPCog(commands.Cog):
         sub = self.store.get_pending_by_message(channel_id, message_id)
         if not sub or not self.engine.withdraw(sub["id"], now_utc()):
             return
-        ch = self.bot.get_channel(config.STAFF_REVIEW_CHANNEL_ID)
+        ch = self._card_channel(sub)
         if ch and sub["review_message_id"]:
             try:
                 await ch.get_partial_message(sub["review_message_id"]).delete()
             except Exception as e:
                 log.warning("could not remove review card: %s", e)
+
+    # ---- official posts: engagement cards --------------------------------
+    def engagement_embed(self, note, poster_name):
+        points = ", ".join(f"{pc.ENGAGE['button_labels'][a]} +{pc.CATEGORIES[c]['points']}"
+                           for a, c in pc.ENGAGE["actions"].items())
+        e = discord.Embed(
+            title="New post from NEXTGEN",
+            description=note or "Engage with the post on X, then press the buttons below to claim your points.",
+            color=discord.Color.blurple())
+        e.add_field(name="Reach XP", value=points + ".", inline=False)
+        e.add_field(
+            name="How it works",
+            value="Do it on X first, then press the button for each thing you did. A moderator checks every claim "
+                  "and the points are added once it is approved.", inline=False)
+        e.set_footer(text=f"Posted by {poster_name}")
+        return e
+
+    async def send_engagement_card(self, channel, link, note, poster_name):
+        """Post the card with the X link in the message text, so Discord shows the post's own
+        preview card, plus the Like, Retweet and Comment buttons."""
+        pid, _closes = self.engine.open_official_post(link, now_utc())
+        ping = f"<@&{config.XP_PING_ROLE_ID}>" if config.XP_PING_ROLE_ID else ""
+        msg = await channel.send(
+            content=f"{ping} {link}".strip(), embed=self.engagement_embed(note, poster_name), view=engage_view(pid),
+            allowed_mentions=discord.AllowedMentions(roles=True, everyone=False, users=False))
+        return pid, msg
+
+    async def _convert_official(self, message, link):
+        """Someone above Elite dropped an X link in the engagement channel: replace it with the card."""
+        note = message.content.replace(link, "").strip()
+        try:
+            pid, _msg = await self.send_engagement_card(message.channel, link, note, message.author.display_name)
+        except discord.Forbidden:
+            log.warning("Cannot post the engagement card in #%s (missing permissions); leaving the link as it is.",
+                        getattr(message.channel, "name", "?"))
+            return
+        try:
+            await message.delete()
+        except Exception as e:
+            log.warning("Could not remove the original link message (needs Manage Messages): %s", e)
+        db.log_action(message.guild.id, "OFFICIAL POST", message.author.id, str(message.author), link[:200])
+
+    async def on_engage(self, interaction, post_id, action):
+        uid = interaction.user.id
+        if self.store.is_excluded(uid):
+            await interaction.response.send_message("You are not part of points right now.", ephemeral=True)
+            return
+        if not self.store.get_official_post(post_id):
+            await interaction.response.send_message("This post is not open for claims any more.", ephemeral=True)
+            return
+        live = self.store.live_claim(post_id, uid, action)
+        if live:
+            await interaction.response.send_message(
+                "You already claimed this. It is still being verified." if live["status"] == "pending"
+                else "You already claimed this and it was approved.", ephemeral=True)
+            return
+        handle = self.store.get_handle(uid)
+        if not handle:
+            await interaction.response.send_modal(HandleModal(self, post_id, action))
+            return
+        await interaction.response.defer(ephemeral=True)
+        await self.submit_claim(interaction, post_id, action, handle, "")
+
+    async def submit_claim(self, interaction, post_id, action, handle, proof):
+        """Record the claim, send it to the mod channel for verification, tell the member."""
+        status, cid = self.engine.claim_engagement(
+            interaction.guild.id, post_id, interaction.user.id, action, handle, proof, now_utc())
+        if status == "exists":
+            await interaction.followup.send("You already claimed this.", ephemeral=True)
+            return
+        if status != "pending":
+            await interaction.followup.send("That could not be recorded.", ephemeral=True)
+            return
+        if not await self._post_claim_card(interaction.user, cid, post_id, action, handle, proof):
+            # nobody would ever see it, so do not leave it pending; the member can try again
+            self.engine.decline_claim(cid, 0, now_utc())
+            await interaction.followup.send(
+                "I could not reach the moderators just now. Please try again in a few minutes.", ephemeral=True)
+            return
+        await interaction.followup.send(
+            "Verification in progress. A moderator will check it and the points are added once it is approved.",
+            ephemeral=True)
+
+    async def _post_claim_card(self, user, cid, post_id, action, handle, proof):
+        ch = self.bot.get_channel(config.STAFF_REVIEW_CHANNEL_ID)
+        if not ch:
+            log.error("Engagement claim %s has no mod channel to go to.", cid)
+            return False
+        cat = pc.CATEGORIES[pc.ENGAGE["actions"][action]]
+        post = self.store.get_official_post(post_id)
+        e = discord.Embed(title=f"Engagement claim #{cid}", color=discord.Color.gold())
+        e.add_field(name="Member", value=f"<@{user.id}> ({user.id})", inline=True)
+        e.add_field(name="X account", value=f"[@{handle}](https://x.com/{handle})", inline=True)
+        e.add_field(name="Claims", value=f"{pc.ENGAGE['button_labels'][action]} (+{cat['points']} Reach XP)", inline=True)
+        e.add_field(name="Post", value=(post["url"] if post else "unknown")[:500], inline=False)
+        if proof:
+            e.add_field(name="Proof", value=proof[:500], inline=False)
+        view = discord.ui.View(timeout=None)
+        view.add_item(ClaimButton(cid, "approve"))
+        view.add_item(ClaimButton(cid, "decline"))
+        try:
+            msg = await ch.send(embed=e, view=view, allowed_mentions=discord.AllowedMentions.none())
+            self.store.set_claim_message(cid, msg.id)
+            return True
+        except Exception as ex:
+            log.error("Failed to post engagement claim %s: %s", cid, ex)
+            return False
+
+    async def on_claim_review(self, interaction, cid, verb):
+        member = interaction.user
+        if not is_reviewer(member, interaction.guild):
+            await interaction.response.send_message(
+                "Only moderators with a role above Elite can verify claims.", ephemeral=True)
+            return
+        claim = self.store.get_claim(cid)
+        if not claim:
+            await interaction.response.send_message("That claim no longer exists.", ephemeral=True)
+            return
+        if claim["user_id"] == member.id:
+            await interaction.response.send_message("You cannot verify your own claim.", ephemeral=True)
+            return
+        ref = self.store.get_referral(claim["user_id"])
+        if ref and ref["inviter_id"] == member.id:
+            await interaction.response.send_message("You cannot verify a claim from someone you invited.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        label = pc.ENGAGE["button_labels"][claim["action"]].lower()
+        if verb == "approve":
+            try:
+                res = self.engine.approve_claim(cid, member.id, now_utc())
+            except Exception:
+                log.exception("approve_claim failed for %s", cid)
+                await interaction.followup.send("Something went wrong. Nothing was awarded, try again.", ephemeral=True)
+                return
+            if not res.ok:
+                await interaction.followup.send("That claim has already been reviewed.", ephemeral=True)
+                return
+            a = res.awards[0]
+            if a.points > 0:
+                dm = f"Your {label} on the official post was approved. +{a.points} {a.lane} XP."
+            else:
+                dm = f"Your {label} on the official post was approved, but no points were added ({a.notes[0] if a.notes else 'none'})."
+            await self._close_claim_card(interaction, discord.Color.green(), f"Approved by {member}",
+                                         f"+{a.points} {a.lane} XP" + (f" ({'; '.join(a.notes)})" if a.notes else ""))
+            db.log_action(claim["guild_id"], "CLAIM APPROVED", claim["user_id"], str(member), f"{claim['action']} +{a.points}")
+            self.request_board_refresh()
+        else:
+            if not self.engine.decline_claim(cid, member.id, now_utc()):
+                await interaction.followup.send("That claim has already been reviewed.", ephemeral=True)
+                return
+            dm = f"Your {label} on the official post could not be verified, so no points were added."
+            await self._close_claim_card(interaction, discord.Color.red(), f"Declined by {member}", None)
+            db.log_action(claim["guild_id"], "CLAIM DECLINED", claim["user_id"], str(member), claim["action"])
+        target = interaction.guild.get_member(claim["user_id"]) if interaction.guild else None
+        if target:
+            try:
+                await target.send(dm)
+            except Exception:
+                pass  # DMs closed: the leaderboard still shows the points
+        await interaction.followup.send("Done.", ephemeral=True)
+
+    async def _close_claim_card(self, interaction, color, footer, result):
+        msg = interaction.message
+        if msg is None:
+            return
+        try:
+            e = msg.embeds[0] if msg.embeds else discord.Embed()
+            e.color = color
+            e.set_footer(text=footer)
+            if result:
+                e.add_field(name="Result", value=result[:1000], inline=False)
+            await msg.edit(embed=e, view=None)
+        except Exception as ex:
+            log.error("could not update claim card: %s", ex)
+
+    # ---- live leaderboards ------------------------------------------------
+    BOARD_TITLES = {pc.BUILDER: "Build leaderboard", pc.REACH: "Engagement leaderboard"}
+
+    def board_embed(self, guild, lane):
+        now = now_utc()
+        hide = self.hide_fn(guild)
+        n = self.engine.cycle_of(now)
+        start, end = self.engine.cycle_range(n)
+        rows = self.engine.leaderboard(lane, "cycle", now, hide, limit=pc.BOARD["top"])
+        body = "\n".join(f"{r}. **{self._name(guild, u)}** -- {p} XP" for r, u, p in rows) or "No points yet."
+        e = discord.Embed(title=self.BOARD_TITLES[lane], color=discord.Color.gold(),
+                          description=f"Cycle {n}, {_cycle_text(start, end)}.\n\n{body}")
+        alltime = self.engine.leaderboard(lane, "alltime", now, hide, limit=5)
+        if alltime:
+            e.add_field(name="All time", value="\n".join(
+                f"{r}. **{self._name(guild, u)}** -- {p} XP" for r, u, p in alltime), inline=False)
+        e.set_footer(text="Updates automatically")
+        e.timestamp = now
+        return e
+
+    def request_board_refresh(self):
+        """Refresh the leaderboards a few seconds from now. Several approvals in a row share one edit."""
+        if self._board_task and not self._board_task.done():
+            return
+        try:
+            self._board_task = asyncio.get_running_loop().create_task(self._delayed_board_refresh())
+        except RuntimeError:
+            pass  # no event loop (unit tests of pure logic)
+
+    async def _delayed_board_refresh(self):
+        await asyncio.sleep(pc.BOARD["refresh_delay_seconds"])
+        await self.update_boards()
+
+    async def update_boards(self):
+        """Keep one message per lane up to date in its own channel: edit it in place, or post it
+        again if it was deleted. Does nothing for a lane whose channel is not set."""
+        for lane, cid in ((pc.BUILDER, config.BUILD_LEADERBOARD_CHANNEL_ID), (pc.REACH, config.REACH_LEADERBOARD_CHANNEL_ID)):
+            if not cid:
+                continue
+            try:
+                ch = self.bot.get_channel(cid)
+                if ch is None or is_silent_channel(ch):
+                    log.warning("Leaderboard channel %s for %s is missing or silent; skipping.", cid, lane)
+                    continue
+                embed = self.board_embed(ch.guild, lane)
+                key = f"{pc.BOARD['kv_prefix']}:{lane}"
+                mid = db.kv_get(key)
+                if mid:
+                    try:
+                        msg = await ch.fetch_message(int(mid))
+                        await msg.edit(embed=embed)
+                        continue
+                    except discord.NotFound:
+                        pass
+                msg = await ch.send(embed=embed)
+                db.kv_set(key, msg.id)
+            except Exception:
+                log.exception("Could not update the %s leaderboard", lane)
 
     # ---- invites and referrals -------------------------------------------
     async def _cache_invites(self, guild):
@@ -629,8 +1043,11 @@ class XPCog(commands.Cog):
                 role = g.get_role(config.ELITE_ROLE_ID)
                 if role:
                     elite |= {m.id for m in role.members}
-        for a in self.engine.sweep_referrals(now_utc(), elite):
+        paid = self.engine.sweep_referrals(now_utc(), elite)
+        for a in paid:
             log.info("Referral sweep paid: %s +%s to %s", a.category, a.points, a.user_id)
+        if paid:
+            self.request_board_refresh()
 
     @_hourly.before_loop
     async def _hourly_ready(self):
@@ -638,6 +1055,9 @@ class XPCog(commands.Cog):
 
     @tasks.loop(time=datetime.time(hour=config.XP_LEADERBOARD_HOUR, minute=0, tzinfo=UTC))
     async def _daily_board(self):
+        if config.BUILD_LEADERBOARD_CHANNEL_ID or config.REACH_LEADERBOARD_CHANNEL_ID:
+            await self.update_boards()  # the live boards roll over to the new cycle at midnight UTC
+            return
         today = xe.day_key(now_utc())
         if db.kv_get("points_leaderboard_last_date") == today:
             return
@@ -773,7 +1193,7 @@ class XPCog(commands.Cog):
             return
         await i.response.send_message(f"Thanks. {member.display_name} is recorded as your inviter.", ephemeral=True)
 
-    @app_commands.command(name="xpost", description="Announce a new X post and open the proof window.")
+    @app_commands.command(name="xpost", description="Post an X link as an engagement card with Like, Retweet and Comment buttons.")
     @app_commands.describe(link="Link to the X post.", note="Optional message to go with it.")
     @staff_only()
     async def xpost(self, i: discord.Interaction, link: str, note: str = ""):
@@ -787,29 +1207,24 @@ class XPCog(commands.Cog):
         if is_silent_channel(target):
             await i.followup.send(f"{target.mention} is a silent channel, so I will not post there.", ephemeral=True)
             return
-        pid, closes = self.engine.open_official_post(link, now_utc())
-        reach = i.guild.get_channel(config.REACH_CHANNEL_ID) if config.REACH_CHANNEL_ID else None
-        where = reach.mention if reach else "the Reach channel"
-        e = discord.Embed(
-            title="New post from NEXTGEN",
-            description=(note or "Engage with the post, then share your proof.") + f"\n\n{link}",
-            color=discord.Color.blurple())
-        e.add_field(
-            name="How to earn Reach XP",
-            value=f"Engage on X, then post your reply or repost link in {where}. "
-                  f"A reviewer checks it and awards points. Proof posted before <t:{_unix(closes)}:t> "
-                  f"counts as inside the official window.",
-            inline=False)
-        e.set_footer(text=f"Posted by {i.user.display_name}")
-        ping = f"<@&{config.XP_PING_ROLE_ID}>" if config.XP_PING_ROLE_ID else None
         try:
-            await target.send(content=ping, embed=e,
-                              allowed_mentions=discord.AllowedMentions(roles=True, everyone=False, users=False))
+            pid, _msg = await self.send_engagement_card(target, link, note, i.user.display_name)
         except discord.Forbidden:
             await i.followup.send("I cannot post there (missing permissions).", ephemeral=True)
             return
         db.log_action(i.guild.id, "OFFICIAL POST", i.user.id, str(i.user), link[:200])
-        await i.followup.send(f"Posted in {target.mention}. Window #{pid} is open until <t:{_unix(closes)}:t>.", ephemeral=True)
+        await i.followup.send(f"Posted in {target.mention}. Members can now claim Like, Retweet and Comment points.",
+                              ephemeral=True)
+
+    @app_commands.command(name="xphandle", description="Set or change the X username on your engagement claims.")
+    @app_commands.describe(username="Your X username, with or without the @.")
+    async def xphandle(self, i: discord.Interaction, username: str):
+        handle = xe.parse_x_handle(username)
+        if not handle:
+            await i.response.send_message("That does not look like an X username.", ephemeral=True)
+            return
+        self.store.set_handle(i.user.id, handle)
+        await i.response.send_message(f"Your X username is saved as @{handle}.", ephemeral=True)
 
     @app_commands.command(name="officialpost", description="Open a proof window for an official X post, without announcing it.")
     @app_commands.describe(link="Link to the X post.")
@@ -833,6 +1248,7 @@ class XPCog(commands.Cog):
             return
         a = self.engine.award_manual(i.guild.id, member.id, category, reason, i.user.id, now_utc(), i.id)
         db.log_action(i.guild.id, "POINTS AWARD", member.id, str(i.user), f"{category} +{a.points} {reason}"[:200])
+        self.request_board_refresh()
         if a.points:
             msg = f"Awarded +{a.points} {a.lane} XP to {member.display_name} for {xe.label(category)}."
         else:
@@ -860,6 +1276,7 @@ class XPCog(commands.Cog):
             return
         self.engine.adjust(i.guild.id, member.id, lane, points, reason, i.user.id, now_utc(), i.id)
         db.log_action(i.guild.id, "POINTS ADJUST", member.id, str(i.user), f"{lane} {points:+d}: {reason}"[:200])
+        self.request_board_refresh()
         await i.response.send_message(f"Adjusted {member.display_name} by {points:+d} {lane} XP.", ephemeral=True)
 
     @app_commands.command(name="xpexclude", description="Take a member out of points and leaderboards.")
@@ -868,6 +1285,7 @@ class XPCog(commands.Cog):
     async def xpexclude(self, i: discord.Interaction, member: discord.Member, reason: str = ""):
         self.store.exclude(member.id, reason)
         db.log_action(i.guild.id, "POINTS EXCLUDE", member.id, str(i.user), reason[:200])
+        self.request_board_refresh()
         await i.response.send_message(f"{member.display_name} is excluded from points.", ephemeral=True)
 
     @app_commands.command(name="xpinclude", description="Put an excluded member back into points.")
@@ -876,6 +1294,7 @@ class XPCog(commands.Cog):
     async def xpinclude(self, i: discord.Interaction, member: discord.Member):
         ok = self.store.include(member.id)
         db.log_action(i.guild.id, "POINTS INCLUDE", member.id, str(i.user), "")
+        self.request_board_refresh()
         await i.response.send_message(
             f"{member.display_name} is included again." if ok else f"{member.display_name} was not excluded.", ephemeral=True)
 
@@ -985,29 +1404,8 @@ class XPCog(commands.Cog):
         await i.followup.send(f"Posted in {ch.mention}.", ephemeral=True)
 
 
-LEGACY_FLAG = "points_legacy_import_done"
-
-
-def run_legacy_import(engine):
-    """One-time import of the old XP balances as Reach XP. Safe to call at every start: it does
-    nothing once done, and the ledger keys stop any double payment even if it ran twice. A
-    failure is logged and retried at the next start; it never stops the bot from starting."""
-    try:
-        if db.kv_get(LEGACY_FLAG) == "1":
-            return None
-        res = engine.import_legacy_xp(now_utc())
-        db.kv_set(LEGACY_FLAG, "1")
-        log.info("Legacy XP import: %s members, %s Reach XP added (%s already imported, %s excluded), "
-                 "stamped %s UTC.", res["imported"], res["points"], res["already"], res["excluded"], res["stamp"])
-        return res
-    except Exception:
-        log.exception("Legacy XP import failed; it will be retried at the next start.")
-        return None
-
-
 async def setup(bot):
     store = Store(db._run, "pg")
     store.init_schema()
     engine = xe.Engine(store, xe.Rules.from_config(config))
-    run_legacy_import(engine)
     await bot.add_cog(XPCog(bot, store, engine))

@@ -124,6 +124,16 @@ CHALLENGE_CHANNEL_ID     = _int("CHALLENGE_CHANNEL_ID", 0)
 # the welcome-reply forwarding uses) so a card is never silently dropped.
 STAFF_REVIEW_CHANNEL_ID  = _int("STAFF_REVIEW_CHANNEL_ID", 0) or STAFF_CHANNEL_ID or LOG_CHANNEL_ID
 
+# Two live leaderboards, one message each, edited in place as points change:
+#   BUILD_LEADERBOARD_CHANNEL_ID -> Builder XP     REACH_LEADERBOARD_CHANNEL_ID -> engaging on posts (Reach XP)
+BUILD_LEADERBOARD_CHANNEL_ID = _int("BUILD_LEADERBOARD_CHANNEL_ID", 0)
+REACH_LEADERBOARD_CHANNEL_ID = _int("REACH_LEADERBOARD_CHANNEL_ID", 0)
+
+# Proof channels whose review buttons (category menu, Approve, Decline) are put on the bot's
+# reply right in the channel. Anything not listed here sends its review card to the staff channel.
+REVIEW_IN_CHANNEL_KEYS = {k.strip() for k in os.getenv(
+    "REVIEW_IN_CHANNEL_KEYS", "academy,build,tutorial,prompt_result").split(",") if k.strip()}
+
 # channel key (see points_config.CHANNEL_LANES) -> channel id, only for channels that are set
 PROOF_CHANNELS = {k: v for k, v in {
     "reach": REACH_CHANNEL_ID,

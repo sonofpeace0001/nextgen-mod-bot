@@ -44,6 +44,12 @@ CATEGORIES = {
     "referral_active":  dict(lane=REACH, points=25, channels=[], label="referral active", system=True),
     "referral_elite":   dict(lane=REACH, points=50, channels=[], label="referral became Elite", system=True),
     "weekly_challenge_share": dict(lane=REACH, points=25, channels=["reach"], label="weekly challenge share"),
+    # Official post buttons (Like / Repost / Comment on a card the bot posts). Claimed with a
+    # button, verified by a moderator, never picked from a reviewer menu. A fully engaged post
+    # is worth 10, the same as the old single "official engagement" award.
+    "official_like":    dict(lane=REACH, points=2, channels=[], label="like on an official post", claim=True),
+    "official_retweet": dict(lane=REACH, points=3, channels=[], label="repost of an official post", claim=True),
+    "official_comment": dict(lane=REACH, points=5, channels=[], label="comment on an official post", claim=True),
 
     # ---- Builder lane ----
     "academy_lesson":   dict(lane=BUILDER, points=5,  channels=["academy"], label="Academy lesson"),
@@ -78,7 +84,8 @@ HELP_CATEGORIES = ["help_new_member", "help_academy_task", "teach_skill"]
 # Daily caps, counted per UTC day. mode "points" caps the points awarded in the group
 # (a partial award is trimmed to fit); mode "count" caps how many counted awards exist.
 DAILY_CAPS = {
-    "official_engage": dict(categories=["official_engage"], mode="points", limit=30),
+    "official_engage": dict(categories=["official_engage", "official_like", "official_retweet", "official_comment"],
+                            mode="points", limit=30),
     "own_posts": dict(categories=["post_value", "post_original", "post_thread"], mode="count", limit=3),
 }
 
@@ -126,11 +133,25 @@ CHALLENGE = dict(
     share_category="weekly_challenge_share",
 )
 
-# One-time import of the old single XP balance (member_xp) into the ledger as Reach XP.
-# Each member gets one row keyed legacy:{guild}:{user}, so running it again changes nothing.
-# Rows are stamped at the start of the cycle that is current when the import runs, so they
-# count toward that cycle and toward all-time totals.
-LEGACY_IMPORT = dict(lane=REACH, category="legacy_import", reason="imported from the old XP balance")
+# Official post engagement: the buttons on the card the bot posts, and the action each one claims.
+ENGAGE = dict(
+    actions={"like": "official_like", "retweet": "official_retweet", "comment": "official_comment"},
+    button_labels={"like": "Like", "retweet": "Retweet", "comment": "Comment"},
+)
+
+# One-time import of the old single XP balance (member_xp) into the ledger, as Builder XP.
+# Members who hold the Elite role start from zero and are skipped. Each other member gets one
+# row keyed legacy:{guild}:{user}, so running it again changes nothing. Rows are stamped at the
+# start of the cycle that is current when the import runs, so they count toward that cycle and
+# toward all-time totals.
+LEGACY_IMPORT = dict(lane=BUILDER, category="legacy_import", reason="imported from the old XP balance")
+
+# Builder channels accept any post (a link, a screenshot or just text such as "task completed").
+# Text-only posts shorter than this are ignored so a quick "ok" does not create a review.
+MIN_TEXT_ONLY_CHARS = 8
+
+# Live leaderboards: one message per lane, edited in place.
+BOARD = dict(top=10, kv_prefix="points_board_msg", refresh_delay_seconds=5)
 
 # Strikes (zero-points / spam). Staff are alerted at this many.
 STRIKE_ALERT_AT = 3

@@ -63,6 +63,7 @@ class Store:
                 id {pk}, guild_id BIGINT, user_id BIGINT, channel_id BIGINT, message_id BIGINT,
                 lane TEXT, status TEXT DEFAULT 'pending', lesson_day INTEGER,
                 content_hash TEXT, url_key TEXT, review_message_id BIGINT DEFAULT 0,
+                review_channel_id BIGINT DEFAULT 0,
                 reviewer_id BIGINT, within_window INTEGER DEFAULT 0,
                 created_at TEXT, reviewed_at TEXT,
                 selected TEXT DEFAULT '', reason TEXT DEFAULT '', flags TEXT DEFAULT ''
@@ -92,6 +93,15 @@ class Store:
             f"CREATE INDEX IF NOT EXISTS idx_points_submissions_url ON {p}submissions (url_key)",
             f"CREATE INDEX IF NOT EXISTS idx_points_submissions_hash ON {p}submissions (content_hash)",
             f"CREATE INDEX IF NOT EXISTS idx_points_submissions_user ON {p}submissions (user_id, status, created_at)",
+            f"CREATE TABLE IF NOT EXISTS {p}x_handles (user_id BIGINT PRIMARY KEY, handle TEXT)",
+            f"""CREATE TABLE IF NOT EXISTS {p}engage_claims (
+                id {pk}, guild_id BIGINT, post_id BIGINT, user_id BIGINT, action TEXT, handle TEXT, proof TEXT DEFAULT '',
+                status TEXT DEFAULT 'pending', review_message_id BIGINT DEFAULT 0,
+                created_at TEXT, reviewed_at TEXT, reviewer_id BIGINT
+            )""",
+            # one live (pending or approved) claim per member, post and action; a declined one can be retried
+            f"CREATE UNIQUE INDEX IF NOT EXISTS idx_engage_claims_live ON {p}engage_claims (post_id, user_id, action) "
+            "WHERE status IN ('pending','approved')",
         ]
         for s in stmts:
             self._exec(s)
@@ -122,8 +132,10 @@ class Store:
         return self._all(
             f"SELECT * FROM {self.p}submissions WHERE status='pending' AND review_message_id>0")
 
-    def set_review_message(self, sid, mid):
-        self._exec(f"UPDATE {self.p}submissions SET review_message_id=%s WHERE id=%s", (mid, sid))
+    def set_review_message(self, sid, mid, channel_id=0):
+        self._exec(
+            f"UPDATE {self.p}submissions SET review_message_id=%s, review_channel_id=%s WHERE id=%s",
+            (mid, channel_id, sid))
 
     def set_selected(self, sid, csv):
         self._exec(f"UPDATE {self.p}submissions SET selected=%s WHERE id=%s AND status='pending'", (csv, sid))
@@ -386,6 +398,51 @@ class Store:
         return self._one(
             f"SELECT * FROM {self.p}official_posts WHERE opened_at<=%s AND closes_at>=%s "
             "ORDER BY id DESC LIMIT 1", (ts, ts))
+
+    def get_official_post(self, pid):
+        return self._one(f"SELECT * FROM {self.p}official_posts WHERE id=%s", (pid,))
+
+    # ---- X handles and engagement claims ---------------------------------
+    def get_handle(self, user_id):
+        r = self._one(f"SELECT handle FROM {self.p}x_handles WHERE user_id=%s", (user_id,))
+        return r["handle"] if r else None
+
+    def set_handle(self, user_id, handle):
+        self._exec(
+            f"INSERT INTO {self.p}x_handles (user_id,handle) VALUES (%s,%s) "
+            "ON CONFLICT (user_id) DO UPDATE SET handle=EXCLUDED.handle", (user_id, handle))
+
+    def add_claim(self, *, guild_id, post_id, user_id, action, handle, proof, created_at):
+        """A new pending claim, or None when this member already has a live (pending or
+        approved) claim for the same post and action."""
+        r = self._one(
+            f"INSERT INTO {self.p}engage_claims (guild_id,post_id,user_id,action,handle,proof,created_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT (post_id, user_id, action) WHERE status IN ('pending','approved') DO NOTHING RETURNING id",
+            (guild_id, post_id, user_id, action, handle, proof, created_at), commit=True)
+        return r["id"] if r else None
+
+    def get_claim(self, cid):
+        return self._one(f"SELECT * FROM {self.p}engage_claims WHERE id=%s", (cid,))
+
+    def live_claim(self, post_id, user_id, action):
+        return self._one(
+            f"SELECT * FROM {self.p}engage_claims WHERE post_id=%s AND user_id=%s AND action=%s "
+            "AND status IN ('pending','approved') ORDER BY id DESC LIMIT 1", (post_id, user_id, action))
+
+    def set_claim_message(self, cid, mid):
+        self._exec(f"UPDATE {self.p}engage_claims SET review_message_id=%s WHERE id=%s", (mid, cid))
+
+    def claim_revert(self, cid):
+        self._exec(f"UPDATE {self.p}engage_claims SET status='pending', reviewer_id=NULL, reviewed_at=NULL WHERE id=%s", (cid,))
+
+    def claim_transition(self, cid, from_status, to_status, reviewer_id, reviewed_at):
+        """Compare-and-set, like transition() for submissions: only one caller can review a claim."""
+        r = self._one(
+            f"UPDATE {self.p}engage_claims SET status=%s, reviewer_id=%s, reviewed_at=%s "
+            "WHERE id=%s AND status=%s RETURNING id",
+            (to_status, reviewer_id, reviewed_at, cid, from_status), commit=True)
+        return r is not None
 
     def latest_official_post(self):
         return self._one(f"SELECT * FROM {self.p}official_posts ORDER BY id DESC LIMIT 1")

@@ -51,12 +51,24 @@ Two separate lanes, each from proof posted in its own channels:
 `REACH_CHANNEL_ID` and `ACADEMY_CHANNEL_ID` used to be one shared channel (`1492637188817682442`); set both. A channel left unset is simply not a proof channel. The chat, tutor and prompt helper never reply in any proof channel. If a proof channel is also in the ignored, announcement or ticket lists the bot logs a warning at startup.
 
 ### How proof and review work
-1. A member posts proof in a proof channel. Reach needs an `x.com` or `twitter.com` link containing `/status/`; the other channels need a link or an attachment. Academy lesson posts must say `Day N`, and a post covering several days (`day 1-2`, `days 1, 2`, `day 1 and 2`) is rejected and earns nothing. A post that links to a Discord message is a helping submission (helping a new member, helping with an Academy task, teaching a skill) and does not need a day.
+1. **Builder channels** (Build, Tutorial, Prompt result) take whatever a member posts: a link, a screenshot, or just text such as "task completed". A text-only post shorter than 8 characters is treated as chatter and ignored. **Academy** posts still need a link or attachment and `Day N`; a post covering several days (`day 1-2`, `days 1, 2`, `day 1 and 2`) is rejected and earns nothing, and a post that links to a Discord message is a helping submission (no day needed). **Reach** needs an `x.com` or `twitter.com` link containing `/status/`.
 2. Duplicate links (query strings ignored) and duplicate images (SHA-256, up to 8 MB) are rejected across all members. One exception: in Reach a member may resubmit their own already approved post link to claim a likes milestone, and the engine still pays each category once per link.
-3. The bot replies "Received", then posts a review card in `STAFF_REVIEW_CHANNEL_ID` (falls back to `STAFF_CHANNEL_ID`, then `LOG_CHANNEL_ID`). The card shows the member, lane, channel, jump link, lesson day and flags: inside an official post window, account younger than `MIN_ACCOUNT_AGE_DAYS`, or matches earlier rejected proof.
-4. A reviewer picks a category from a menu that only shows categories valid for that channel (Academy lessons allow lesson, test and proof together; everything else is a single choice), then presses **Approve**, **Reject** (asks for a short reason) or **Zero points (spam)** (writes a 0-point row, adds a strike, alerts staff at 3 strikes).
-5. Who can review: staff, plus anyone with a role in `REVIEWER_ROLE_IDS` (empty means staff only). Staff means `STAFF_ROLE_IDS`, or the immune roles when that is empty, plus the founder and anyone with Administrator. Nobody can review their own submission or one from a member they invited.
-6. Buttons are persistent (the submission id is in every custom id) and are re-registered at startup, so cards keep working after a restart. Deleting a pending proof withdraws it and removes its card; an approved award stays unless staff remove it with `/xpadjust`.
+3. **Review buttons appear automatically, no command needed.** For the channels in `REVIEW_IN_CHANNEL_KEYS` (default: academy, build, tutorial, prompt_result) the bot replies right under the member's post with "Received" and a category menu plus **Approve**, **Decline** (optional reason) and **Zero points (spam)** buttons. When a moderator decides, that same message is edited to show the outcome ("Approved. +20 builder XP for build demo."). Anything not in that list (Reach proof) sends its review card to `STAFF_REVIEW_CHANNEL_ID` instead (falls back to `STAFF_CHANNEL_ID`, then `LOG_CHANNEL_ID`). Flags such as a new account or a match with earlier rejected proof are sent to the staff channel, never shown publicly.
+4. **Only moderators with a role above Elite can use the buttons.** That means anyone whose highest role sits above the `ELITE_ROLE_ID` role in the server's role list, plus the founder, Administrators and any role in `STAFF_ROLE_IDS`. Elites cannot approve. `REVIEWER_ROLE_IDS` adds extra reviewer roles. Nobody can review their own submission or one from a member they invited. Everyone else who presses a button gets a private "only moderators with a role above Elite" message.
+5. **Zero points (spam)** writes a 0-point row, adds a strike, and alerts staff at 3 strikes.
+6. Buttons are persistent and re-registered at startup, so cards keep working after a restart. Deleting a pending proof withdraws it and removes its card; an approved award stays unless staff remove it with `/xpadjust`.
+
+### Official post cards (Like, Retweet, Comment)
+When someone with a role above Elite drops an X link (`.../status/...`) in the Reach channel, the bot posts a card in its place and deletes the original (needs Manage Messages; if it cannot, the link stays). The link is kept in the card's message text, so Discord still shows the post's own preview. The card pings `XP_PING_ROLE_ID` and has three buttons, each worth Reach XP (edit in `points_config.py`): **Like +2, Retweet +3, Comment +5**. `/xpost` posts the same card to `XP_ANNOUNCE_CHANNEL_ID`.
+
+A member does it on X first, then presses the button for each thing they did:
+1. The first time, a short form asks for their X username (and an optional link to their reply). It is remembered, so later claims are one click. `/xphandle` changes it.
+2. They see "Verification in progress" (private), and a claim card with their X profile link, the post and Approve / Decline buttons goes to the mod channel (`STAFF_REVIEW_CHANNEL_ID`).
+3. A moderator above Elite checks X and approves or declines. On approval the Reach XP is added to the ledger, the leaderboard updates by itself, and the member gets a DM. Declined claims can be claimed again.
+One live claim per member, post and action. These share the 30-points-per-UTC-day cap on official engagement. The buttons are restored automatically after a restart.
+
+### Live leaderboards
+Set `BUILD_LEADERBOARD_CHANNEL_ID` (Builder XP) and `REACH_LEADERBOARD_CHANNEL_ID` (engaging on posts, Reach XP). The bot keeps one message in each, showing the top 10 this cycle and the top 5 all time, and edits it in place a few seconds after points change (and again at 00:00 UTC for the new cycle). If a message is deleted it posts a fresh one. Elites are visible; the founder, people with a role above Elite, excluded members and people who left are not. With neither channel set, the old behaviour (a daily combined post to `XP_ANNOUNCE_CHANNEL_ID`) is used.
 
 ### The ledger
 `xp_ledger` is the source of truth and leaderboards are `SUM` queries over it. Every award has a unique `award_key` (for example `{submission_id}:{category}`), so a double click, a retry or a restart can never pay twice. Daily caps (official engagement 30 points per UTC day; 3 counted own posts per UTC day), once-per-link rules, weekly streak bonuses (5 distinct UTC days: own posts +30 Reach, Academy +20 Builder), referrals, learn together and the weekly challenge are all in `xp_engine.py`. No LLM is used to score or review.
@@ -77,9 +89,10 @@ Invite use counts are cached at startup and on invite create/delete; when someon
 | `/xpleaderboard lane period` | anyone | Reach, Builder or combined; this cycle or all time; paginated top 10 |
 | `/referrals` | anyone | Your referrals and their stages (private) |
 | `/invitedby member` | anyone | Record who invited you if it was not tracked |
+| `/xphandle username` | anyone | Set or change the X username used on engagement claims |
 | `/challenge status` | anyone | The current challenge and time left |
-| `/xpost link note` | staff | Announce an X post, ping the role, and open an official post window |
-| `/officialpost link` | staff | Open an official post window without announcing |
+| `/xpost link note` | staff | Post an X link as an engagement card (Like, Retweet, Comment buttons) |
+| `/officialpost link` | staff | Open an official post window (only used to flag Reach proof posted in time) |
 | `/challenge create title description` | staff | Start the weekly challenge |
 | `/award member category reason` | staff | Staff awards (events, manual) |
 | `/xpadjust member lane points reason` | staff | Correction, written to the ledger with a reason |
@@ -87,12 +100,11 @@ Invite use counts are cached at startup and on invite create/delete; when someon
 | `/referralclear member` | staff | Release a held (young account) referral |
 | `/cycle review` | staff | Posts the Elite shortlist to the staff channel only |
 
-`/cycle review` lists members who meet **both** `ELITE_MIN_REACH` and `ELITE_MIN_BUILDER` this cycle and do not already hold `ELITE_ROLE_ID`, ranked by combined total and limited to `ELITE_SLOTS_PER_CYCLE`, with the breakdown per lane, plus near misses (one lane met), the top referrer, the top builder and the top Reach member. It never assigns a role: selection stays a human decision. Leaderboards and the review hide excluded members, people who left, and immune-role holders (Elite and staff).
+`/cycle review` lists members who meet **both** `ELITE_MIN_REACH` and `ELITE_MIN_BUILDER` this cycle and do not already hold `ELITE_ROLE_ID`, ranked by combined total and limited to `ELITE_SLOTS_PER_CYCLE`, with the breakdown per lane, plus near misses (one lane met), the top referrer, the top builder and the top Reach member. It never assigns a role: selection stays a human decision. Leaderboards hide excluded members, people who left, the founder, and holders of an immune role other than Elite (staff and admins). Elites are visible, but the shortlist never includes someone who already holds the Elite role.
 
 (The old single-points commands `/xproof`, `/addxp` and `/removexp` are retired. The old `member_xp`, `x_posts` and `xp_submissions` tables are untouched and kept for reference.)
 
-**Old XP carried over as Reach XP.** On the first start after this shipped, each member's old `member_xp` balance was copied into the ledger once, as Reach XP (category `legacy_import`, award key `legacy:{guild}:{user}`), stamped at the start of the cycle that was current at that moment, so it counts toward that cycle and all-time totals. It cannot run twice (unique key plus a done flag), skips excluded members, and never modifies the old table. Imported Reach XP alone does not put anyone on the Elite shortlist, because that needs the Builder minimum too. To correct an individual balance, use `/xpadjust`.
-
+**Old XP carried over as Builder XP; Elites start from zero.** Once, after the first start with `ELITE_ROLE_ID` set, each non-Elite member's old `member_xp` balance is copied into the ledger as **Builder XP** (category `legacy_import`, award key `legacy:{guild}:{user}`), stamped at the start of the cycle that is current at that moment, so it counts toward that cycle and all-time totals and shows on the Build leaderboard. Members who hold the Elite role are skipped and start from zero (they still appear on the leaderboards as soon as they earn). It waits, and logs a warning, until `ELITE_ROLE_ID` is set and found in the server; it cannot run twice (unique key plus a done flag), skips excluded members, and never modifies the old table. Imported Builder XP alone does not put anyone on the Elite shortlist, because that needs the Reach minimum too. To correct an individual balance, use `/xpadjust`.
 
 ## Database
 Persistence is Postgres via Supabase, not a local file. **This matters on Railway: a local SQLite file lives on the container's disk, which Railway wipes on every deploy and restart** — warnings, mod logs, appeals, and retention progress would silently vanish every time the bot redeployed. Postgres survives that.
@@ -164,10 +176,13 @@ Then point `SUPABASE_DB_*` (below) at that project and role. `database.py`'s `in
 | TUTORIAL_CHANNEL_ID | No | 1520157303054139492 |
 | PROMPT_RESULT_CHANNEL_ID | No | 1492637326541590790 |
 | CHALLENGE_CHANNEL_ID | No | 0 (weekly challenge posts) |
+| BUILD_LEADERBOARD_CHANNEL_ID | No | 0 (live Builder XP leaderboard) |
+| REACH_LEADERBOARD_CHANNEL_ID | No | 0 (live engagement / Reach XP leaderboard) |
+| REVIEW_IN_CHANNEL_KEYS | No | academy,build,tutorial,prompt_result (channels whose review buttons sit under the post) |
 | STAFF_REVIEW_CHANNEL_ID | No | falls back to STAFF_CHANNEL_ID, then LOG_CHANNEL_ID |
-| ELITE_ROLE_ID | No | 0 |
-| STAFF_ROLE_IDS | No | empty (staff = the immune roles) |
-| REVIEWER_ROLE_IDS | No | empty (staff only) |
+| ELITE_ROLE_ID | **Set this** | 0 (needed for "above Elite" checks, the legacy import, and showing Elites on leaderboards) |
+| STAFF_ROLE_IDS | No | empty (extra roles treated as above Elite) |
+| REVIEWER_ROLE_IDS | No | empty (extra reviewer roles; empty means only roles above Elite) |
 | POINTS_TZ | No | UTC (points always run on UTC; any other value is only warned about) |
 | CYCLE_START_DATE | No | 2026-10-05 (YYYY-MM-DD, read as 00:00:00 UTC; set your first cycle date) |
 | CYCLE_LENGTH_DAYS | No | 14 |

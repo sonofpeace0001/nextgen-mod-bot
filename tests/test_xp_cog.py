@@ -30,18 +30,20 @@ CHANNELS = {"reach": REACH, "academy": ACADEMY, "build": BUILD}
 NOW = datetime.datetime(2026, 10, 6, 12, 0, 0, tzinfo=UTC)
 
 
-def member(uid, admin=False, roles=()):
+def member(uid, admin=False, roles=(), positions=None, guild=None):
+    """A fake guild member. `positions` maps role id to its place in the server's role list."""
+    positions = positions or {}
     return SimpleNamespace(
         id=uid, bot=False, mention=f"<@{uid}>", display_name=f"user{uid}",
         created_at=NOW - datetime.timedelta(days=400), joined_at=NOW - datetime.timedelta(days=30),
-        guild_permissions=SimpleNamespace(administrator=admin),
-        roles=[SimpleNamespace(id=r) for r in roles])
+        guild_permissions=SimpleNamespace(administrator=admin), guild=guild,
+        roles=[SimpleNamespace(id=r, position=positions.get(r, 1)) for r in roles], send=AsyncMock())
 
 
 def proof_message(mid, author, channel_id, content, attachments=()):
     ch = SimpleNamespace(id=channel_id, mention=f"<#{channel_id}>")
     return SimpleNamespace(
-        id=mid, author=author, guild=SimpleNamespace(id=GUILD), channel=ch, content=content,
+        id=mid, author=author, guild=SimpleNamespace(id=GUILD, get_role=lambda rid: None), channel=ch, content=content,
         attachments=list(attachments), created_at=NOW, jump_url=f"https://discord.com/channels/{GUILD}/{channel_id}/{mid}",
         reply=AsyncMock())
 
@@ -85,6 +87,8 @@ class CogCase(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(config, "STAFF_REVIEW_CHANNEL_ID", STAFF_CH),
             mock.patch.object(config, "FOUNDER_ID", 1),
             mock.patch.object(config, "MIN_ACCOUNT_AGE_DAYS", 7),
+            mock.patch.object(config, "REVIEW_IN_CHANNEL_KEYS", set()),  # staff channel cards unless a test opts in
+            mock.patch.object(config, "ELITE_ROLE_ID", 0),
             mock.patch.object(xp_cog, "db", MagicMock()),
         ]
         for p in patches:
@@ -170,11 +174,19 @@ class TestIntake(CogCase):
         self.staff.send.assert_not_awaited()
 
     async def test_missing_proof_and_missing_day_get_a_reply_and_no_submission(self):
-        a = await self.submit(103, 7, "build", "no proof here")
+        a = await self.submit(103, 7, "reach", "my post about NEXTGEN")           # Reach needs an X link
         self.assertEqual(a.reply.await_args.args[0], xe.MSG_NEEDS_PROOF)
-        b = await self.submit(104, 7, "academy", "done https://example.com/x")
+        b = await self.submit(104, 7, "academy", "done https://example.com/x")    # Academy lesson needs Day N
         self.assertEqual(b.reply.await_args.args[0], xe.MSG_NEEDS_DAY)
         self.assertIsNone(self.store.get_submission(1))
+
+    async def test_builder_channel_takes_text_only_and_ignores_chatter(self):
+        chatter = await self.submit(105, 7, "build", "ok thx")
+        chatter.reply.assert_not_awaited()
+        self.assertIsNone(self.store.get_submission(1))
+        done = await self.submit(106, 7, "build", "task completed, the landing page is live")
+        self.assertEqual(self.store.get_submission(1)["status"], "pending")
+        self.assertEqual(done.reply.await_args.args[0], xe.MSG_RECEIVED)
 
     async def test_duplicate_proof_from_another_member_is_refused(self):
         await self.submit(105, 7, "build", "https://example.com/same?utm=1")
@@ -322,16 +334,32 @@ class TestSilentChannels(unittest.TestCase):
             self.assertTrue(xp_cog.is_silent_channel(SimpleNamespace(id=7, name="support-ticket-12")))
             self.assertFalse(xp_cog.is_silent_channel(SimpleNamespace(id=8, name="build-showcase")))
 
-    def test_staff_rule(self):
-        with mock.patch.object(config, "STAFF_ROLE_IDS", set()), mock.patch.object(config, "IMMUNE_ROLE_IDS", {10}), \
-                mock.patch.object(config, "FOUNDER_ID", 1):
-            self.assertTrue(xp_cog.is_staff(member(2, roles=[10])))     # immune roles count when STAFF_ROLE_IDS is empty
-            self.assertTrue(xp_cog.is_staff(member(3, admin=True)))
-            self.assertTrue(xp_cog.is_staff(member(1)))                 # founder
-            self.assertFalse(xp_cog.is_staff(member(4, roles=[99])))
-        with mock.patch.object(config, "STAFF_ROLE_IDS", {20}), mock.patch.object(config, "IMMUNE_ROLE_IDS", {10}):
-            self.assertTrue(xp_cog.is_staff(member(5, roles=[20])))
-            self.assertFalse(xp_cog.is_staff(member(6, roles=[10])))
+    def test_above_elite_rule(self):
+        elite = SimpleNamespace(id=700, position=5)
+        guild = SimpleNamespace(get_role=lambda rid: elite if rid == 700 else None)
+        pos = {700: 5, 701: 9, 702: 3}
+        with mock.patch.object(config, "ELITE_ROLE_ID", 700), mock.patch.object(config, "STAFF_ROLE_IDS", set()),                 mock.patch.object(config, "FOUNDER_ID", 1):
+            self.assertTrue(xp_cog.is_above_elite(member(2, roles=[701], positions=pos), guild))      # higher role
+            self.assertTrue(xp_cog.is_above_elite(member(2, roles=[700, 701], positions=pos), guild))  # Elite plus a higher role
+            self.assertFalse(xp_cog.is_above_elite(member(3, roles=[700], positions=pos), guild))     # Elite itself
+            self.assertFalse(xp_cog.is_above_elite(member(4, roles=[702], positions=pos), guild))     # below Elite
+            self.assertFalse(xp_cog.is_above_elite(member(5), guild))                                 # no roles
+            self.assertTrue(xp_cog.is_above_elite(member(1), guild))                                  # founder
+            self.assertTrue(xp_cog.is_above_elite(member(6, admin=True), guild))                      # Administrator
+        with mock.patch.object(config, "ELITE_ROLE_ID", 700), mock.patch.object(config, "STAFF_ROLE_IDS", {702}):
+            self.assertTrue(xp_cog.is_above_elite(member(7, roles=[702], positions=pos), guild))      # named staff role
+
+    def test_without_an_elite_role_it_falls_back_to_the_immune_roles(self):
+        guild = SimpleNamespace(get_role=lambda rid: None)
+        with mock.patch.object(config, "ELITE_ROLE_ID", 0), mock.patch.object(config, "STAFF_ROLE_IDS", set()),                 mock.patch.object(config, "IMMUNE_ROLE_IDS", {10}), mock.patch.object(config, "FOUNDER_ID", 1):
+            self.assertTrue(xp_cog.is_above_elite(member(2, roles=[10]), guild))
+            self.assertFalse(xp_cog.is_above_elite(member(4, roles=[99]), guild))
+
+    def test_reviewer_roles_add_to_the_above_elite_rule(self):
+        guild = SimpleNamespace(get_role=lambda rid: SimpleNamespace(id=700, position=5))
+        with mock.patch.object(config, "ELITE_ROLE_ID", 700), mock.patch.object(config, "REVIEWER_ROLE_IDS", {777}):
+            self.assertTrue(xp_cog.is_reviewer(member(8, roles=[777], positions={777: 1}), guild))
+            self.assertFalse(xp_cog.is_reviewer(member(9, roles=[700], positions={700: 5}), guild))
 
 
 if __name__ == "__main__":

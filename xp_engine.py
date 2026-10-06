@@ -151,6 +151,22 @@ _DISCORD_MSG_RE = re.compile(
     r"https?://(?:\w+\.)?discord(?:app)?\.com/channels/\d+/\d+/\d+", re.IGNORECASE)
 
 
+_X_HANDLE_RE = re.compile(r"^@?([A-Za-z0-9_]{1,15})$")
+_X_PROFILE_RE = re.compile(
+    r"^https?://(?:www\.|mobile\.)?(?:x|twitter)\.com/([A-Za-z0-9_]{1,15})(?:[/?#].*)?$", re.IGNORECASE)
+
+
+def parse_x_handle(text):
+    """An X username from '@name', 'name' or a profile link. None if it is not one."""
+    t = (text or "").strip()
+    m = _X_PROFILE_RE.match(t) or _X_HANDLE_RE.match(t)
+    return m.group(1) if m else None
+
+
+# Channels where a post does not need a link or attachment to be reviewed.
+RELAXED_PROOF_CHANNELS = {"build", "tutorial", "prompt_result"}
+
+
 def has_multiple_days(text):
     return bool(_MULTI_DAY_RE.search(text or ""))
 
@@ -212,6 +228,7 @@ class IntakeCheck:
     lesson_day: int | None = None
     url_key: str | None = None
     subtype: str = ""          # "lesson" | "help" | ""
+    text_only: bool = False    # accepted without a link or attachment (Builder channels)
 
 
 def check_intake(channel_key, text, attachment_count):
@@ -222,10 +239,18 @@ def check_intake(channel_key, text, attachment_count):
         return IntakeCheck(False, "multi_day", MSG_MULTI_DAY, store_rejected=True)
 
     links = find_links(text)
+    text_only = False
     if channel_key == "reach":
         has_proof = any(is_x_status_link(link) for link in links)
     else:
         has_proof = bool(links) or attachment_count > 0
+    if not has_proof and channel_key in RELAXED_PROOF_CHANNELS:
+        # Build, tutorial and prompt result channels take whatever the member posts ("task
+        # completed", a screenshot, a link) and let the reviewer judge it. A very short
+        # text-only post is just chatter and is ignored without a reply.
+        if len(text.strip()) < pc.MIN_TEXT_ONLY_CHARS:
+            return IntakeCheck(False, "ignore")
+        has_proof, text_only = True, True
     if not has_proof:
         return IntakeCheck(False, "no_proof", MSG_NEEDS_PROOF)
 
@@ -242,7 +267,7 @@ def check_intake(channel_key, text, attachment_count):
 
     url = primary_proof_url(channel_key, text)
     return IntakeCheck(True, "ok", lesson_day=lesson_day,
-                       url_key=normalise_url(url) if url else None, subtype=subtype)
+                       url_key=normalise_url(url) if url else None, subtype=subtype, text_only=text_only)
 
 
 def menu_categories(channel_key, subtype=""):
@@ -577,15 +602,75 @@ class Engine:
                 out.append(a)
         return out
 
+    # ---- official post engagement claims --------------------------------
+    def claim_engagement(self, guild_id, post_id, user_id, action, handle, proof, now):
+        """A member pressed Like, Retweet or Comment on an official post card. Returns
+        (status, claim_id): pending (new, goes to a moderator), exists (already claimed),
+        excluded, no_post or invalid."""
+        if action not in pc.ENGAGE["actions"]:
+            return "invalid", None
+        if self.store.is_excluded(user_id):
+            return "excluded", None
+        if not self.store.get_official_post(post_id):
+            return "no_post", None
+        cid = self.store.add_claim(guild_id=guild_id, post_id=post_id, user_id=user_id, action=action, handle=handle,
+                                   proof=proof or "", created_at=ts(now))
+        if cid is None:
+            live = self.store.live_claim(post_id, user_id, action)
+            return "exists", live["status"] if live else None
+        return "pending", cid
+
+    def approve_claim(self, cid, reviewer_id, now):
+        claim = self.store.get_claim(cid)
+        if not claim:
+            return ApprovalResult(False, "not_found")
+        if not self.store.claim_transition(cid, "pending", "approved", reviewer_id, ts(now)):
+            return ApprovalResult(False, "not_pending")
+        try:
+            award = self._grant_claim(claim, reviewer_id)
+        except Exception:
+            self.store.claim_revert(cid)
+            raise
+        return ApprovalResult(True, awards=[award])
+
+    def decline_claim(self, cid, reviewer_id, now):
+        return self.store.claim_transition(cid, "pending", "declined", reviewer_id, ts(now))
+
+    def _grant_claim(self, claim, reviewer_id):
+        category = pc.ENGAGE["actions"][claim["action"]]
+        cat = pc.CATEGORIES[category]
+        uid = claim["user_id"]
+        base = points = cat["points"]
+        notes = []
+        if self.store.is_excluded(uid):
+            points = 0
+            notes.append("member is excluded from points")
+        else:
+            points, note = self._apply_caps(uid, category, points, claim["created_at"])
+            if note:
+                notes.append(note)
+        row_id = self._insert(
+            guild_id=claim["guild_id"], user_id=uid, lane=cat["lane"],
+            category=category, points=points, reason="; ".join(notes), submission_id=None,
+            award_key=f"claim:{claim['id']}", awarded_by=reviewer_id, created_at=claim["created_at"])
+        if row_id is None:
+            return Award(category, cat["lane"], 0, base, ["already awarded"], uid, inserted=False)
+        return Award(category, cat["lane"], points, base, notes, uid)
+
     # ---- legacy import ---------------------------------------------------
-    def import_legacy_xp(self, now):
-        """Copy the old single XP balances into the ledger as Reach XP, once per member.
-        Stamped at the start of the current cycle. Idempotent (unique award_key per member),
-        skips excluded members, and never touches the old table."""
+    def import_legacy_xp(self, now, skip_ids=()):
+        """Copy the old single XP balances into the ledger as Builder XP, once per member.
+        Members in skip_ids (the Elites) start from zero and are not imported. Stamped at the
+        start of the current cycle. Idempotent (unique award_key per member), skips excluded
+        members, and never touches the old table."""
         cfg = pc.LEGACY_IMPORT
+        skip_ids = set(skip_ids)
         stamp = self.cycle_range(self.cycle_of(now))[0]
-        out = {"imported": 0, "already": 0, "excluded": 0, "points": 0, "stamp": stamp}
+        out = {"imported": 0, "already": 0, "excluded": 0, "elite": 0, "points": 0, "stamp": stamp}
         for r in self.store.legacy_xp_rows():
+            if r["user_id"] in skip_ids:
+                out["elite"] += 1
+                continue
             if self.store.is_excluded(r["user_id"]):
                 out["excluded"] += 1
                 continue
