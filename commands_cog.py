@@ -6,7 +6,6 @@ from discord import app_commands
 from discord.ext import commands
 import config, database as db, llm, moderation
 import reports as reports_module
-import xp as xp_module
 
 
 def _has_immune_role(member) -> bool:
@@ -201,78 +200,6 @@ class ModCog(commands.Cog):
             return
         db.log_action(i.guild.id, "ANNOUNCE", i.user.id, str(i.user), title[:200])
         await i.followup.send(f"Announcement posted in {target.mention}.", ephemeral=True)
-
-    # ── X ENGAGEMENT XP ────────────────────────────────────────────
-
-    @app_commands.command(name="xpost", description="Announce a new X post for members to engage with and earn XP.")
-    @app_commands.describe(link="Link to the X post.", note="Optional custom message (default: generic prompt).")
-    @is_immune_only()
-    async def xpost(self, i, link: str, note: str = ""):
-        await i.response.defer(ephemeral=True)
-        await xp_module.announce_x_post(self.bot, i, link, note)
-
-    @app_commands.command(name="xproof", description="Submit proof you engaged with the latest X post, to earn XP.")
-    @app_commands.describe(link="Link to your own reply or repost.")
-    async def xproof(self, i, link: str):
-        await xp_module.submit_proof(self.bot, i, link)
-
-    @app_commands.command(name="addxp", description="Manually award XP for any task -- your review IS the verification.")
-    @app_commands.describe(
-        member="Who to award XP to.",
-        amount="How much XP (1-1000).",
-        task="What they did, shown to them in the DM (e.g. 'helped design the banner').",
-    )
-    @is_immune_only()
-    async def addxp(self, i, member: discord.Member, amount: app_commands.Range[int, 1, 1000], task: str = ""):
-        await i.response.defer(ephemeral=True)
-        total = db.add_xp(i.guild.id, member.id, amount)
-        db.log_action(i.guild.id, "XP AWARDED", member.id, str(i.user),
-                       f"+{amount} XP for: {task or 'manual award'} (total {total})")
-        try:
-            msg = f"you were awarded +{amount} XP"
-            if task: msg += f" for: {task}"
-            msg += f". you're at {total} XP now."
-            await member.send(msg)
-        except Exception: pass
-        await i.followup.send(f"Awarded {amount} XP to {member.mention} (total: {total}).", ephemeral=True)
-
-    @app_commands.command(name="removexp", description="Correct a mistaken XP award by removing XP from a member.")
-    @app_commands.describe(
-        member="Who to remove XP from.",
-        amount="How much XP to remove (1-1000). Never drops below 0.",
-        reason="Why, shown to them in the DM.",
-    )
-    @is_immune_only()
-    async def removexp(self, i, member: discord.Member, amount: app_commands.Range[int, 1, 1000], reason: str = ""):
-        await i.response.defer(ephemeral=True)
-        total = db.add_xp(i.guild.id, member.id, -amount)
-        db.log_action(i.guild.id, "XP REMOVED", member.id, str(i.user),
-                       f"-{amount} XP: {reason or 'correction'} (total {total})")
-        try:
-            msg = f"{amount} XP was removed from your balance"
-            if reason: msg += f": {reason}"
-            msg += f". you're at {total} XP now."
-            await member.send(msg)
-        except Exception: pass
-        await i.followup.send(f"Removed {amount} XP from {member.mention} (total: {total}).", ephemeral=True)
-
-    @app_commands.command(name="xp", description="Check XP balance.")
-    @app_commands.describe(member="Whose XP to check. Leave empty for your own.")
-    async def xp(self, i, member: discord.Member = None):
-        target = member or i.user
-        total = db.get_xp(i.guild.id, target.id)
-        await i.response.send_message(f"{target.mention} has **{total} XP**.", ephemeral=member is None)
-
-    @app_commands.command(name="xpleaderboard", description="Top XP earners.")
-    @app_commands.describe(limit="How many to show (default 10, max 25).")
-    async def xpleaderboard(self, i, limit: app_commands.Range[int, 1, 25] = 10):
-        # Immune roles (Elite/Admin/Escalation) never show on the leaderboard -- same
-        # filtering the daily auto-post uses, see xp.build_leaderboard_embed.
-        e = xp_module.build_leaderboard_embed(i.guild, limit)
-        if e is None:
-            await i.response.send_message("No XP earned yet.", ephemeral=True)
-            return
-        await i.response.send_message(embed=e)
 
     # ── CHANNEL IGNORE MANAGEMENT ─────────────────────────────────
 
