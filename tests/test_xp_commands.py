@@ -85,7 +85,7 @@ class TestPublicCommands(CommandCase):
         text = " ".join(f.value for f in embed.fields)
         self.assertIn("60 of 100 needed (rank 2)", text)
         self.assertIn("30 of 100 needed (rank 1)", text)
-        self.assertIn("All time: 60", text)
+        self.assertIn("All-time XP: 60", text)
 
     async def test_leaderboard_is_paginated_and_skips_excluded_members(self):
         for n in range(25):
@@ -309,7 +309,7 @@ class TestCycleReviewCommand(CommandCase):
         self.assertNotIn("<@1002>", names["Meets both minimums"])      # already Elite
         self.assertNotIn("<@1003>", names["Meets both minimums"])      # only one lane
         self.assertIn("<@1003>", names["Near misses (one lane met)"])
-        self.assertIn("Choosing and giving the role is a staff decision", posted.description)
+        self.assertIn("get the Elite role automatically", posted.description)
         i.followup.send.assert_awaited()
         self.assertEqual(self.guild.get_channel(BUILD).send.await_count, 0)  # nothing public
 

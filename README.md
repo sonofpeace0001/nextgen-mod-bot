@@ -80,6 +80,17 @@ Elites can earn and are shown, tagged "(Elite)" next to their name. The founder,
 ### The ledger
 `xp_ledger` is the source of truth and leaderboards are `SUM` queries over it. Every award has a unique `award_key` (for example `{submission_id}:{category}`), so a double click, a retry or a restart can never pay twice. Daily caps (official engagement 30 points per UTC day; 3 counted own posts per UTC day), once-per-link rules, weekly streak bonuses (5 distinct UTC days: own posts +30 Reach, Academy +20 Builder), referrals, learn together and the weekly challenge are all in `xp_engine.py`. No LLM is used to score or review.
 
+### All-time XP and cycle XP
+Every member has two numbers per lane. **All-time XP** is everything ever earned, including the old imported points and the one-off correction, and is what the leaderboards list under "All-time XP". **Cycle XP** is what was earned in the current 14-day cycle from proof, claims, bonuses and staff awards only; the legacy import and the correction are excluded, so **everyone starts at 0**, and it goes back to 0 at each cycle rollover (00:00 UTC). Cycle XP is what decides Elite. All-time XP is everything a member has accumulated since joining.
+
+### Automatic Elite role
+- The moment a member's cycle XP reaches **both** `ELITE_MIN_REACH` and `ELITE_MIN_BUILDER` (100 and 100 by default), the bot gives them the Elite role and says so in the log channel. It checks a few seconds after every approval and hourly, so there is no waiting for the end of the cycle and no slot limit (`ELITE_SLOTS_PER_CYCLE` now only shapes `/cycle review`).
+- When a cycle closes, every Elite who did not reach both minimums in that cycle loses the role (checked once per finished cycle, announced in the log channel). Reaching them again later in a cycle gives it straight back. Nothing is removed during the first cycle (`CYCLE_START_DATE`), since there is no earlier cycle to judge.
+- The founder and anyone above the Elite role are never changed. The bot needs **Manage Roles** and its own role must sit above the Elite role; otherwise it logs a warning and retries at the next check.
+
+### No cap on points
+There is no ceiling: members can earn as much as they like in both lanes, and 100 Reach and 100 Builder cycle XP is only the **minimum** for Elite (1000 and 1000 is fine). `POINTS_CAP` is an optional per-lane cycle ceiling and is off (0) by default.
+
 ### Editing the numbers
 All point values, caps, bonuses and referral/challenge rules live in `points_config.py` (data only, no logic). Edit a number there and redeploy. Elite thresholds, slots, cycle length and windows are environment variables (table below).
 
@@ -106,13 +117,13 @@ Invite use counts are cached at startup and on invite create/delete; when someon
 | `/xpadjust member lane points reason` | staff | Correction, written to the ledger with a reason |
 | `/xpexclude member` / `/xpinclude member` | staff | Take a member out of, or back into, points and leaderboards |
 | `/referralclear member` | staff | Release a held (young account) referral |
-| `/cycle review` | staff | Posts the Elite shortlist to the staff channel only |
+| `/cycle review` | staff | Posts this cycle's progress toward Elite to the staff channel only |
 
-`/cycle review` lists members who meet **both** `ELITE_MIN_REACH` and `ELITE_MIN_BUILDER` this cycle and do not already hold `ELITE_ROLE_ID`, ranked by combined total and limited to `ELITE_SLOTS_PER_CYCLE`, with the breakdown per lane, plus near misses (one lane met), the top referrer, the top builder and the top Reach member. It never assigns a role: selection stays a human decision. Leaderboards hide excluded members, people who left, the founder, and holders of an immune role other than Elite (staff and admins). Elites are visible, but the shortlist never includes someone who already holds the Elite role.
+`/cycle review` lists members who meet **both** `ELITE_MIN_REACH` and `ELITE_MIN_BUILDER` this cycle and do not already hold `ELITE_ROLE_ID`, ranked by combined total and limited to `ELITE_SLOTS_PER_CYCLE`, with the breakdown per lane, plus near misses (one lane met), the top referrer, the top builder and the top Reach member. The Elite role itself is handled automatically (see Automatic Elite role below); the review is a progress report. Leaderboards hide excluded members, people who left, the founder, and holders of an immune role other than Elite (staff and admins). Elites are visible, but the shortlist never includes someone who already holds the Elite role.
 
 (The old single-points commands `/xproof`, `/addxp` and `/removexp` are retired. The old `member_xp`, `x_posts` and `xp_submissions` tables are untouched and kept for reference.)
 
-**Old XP carried over, half Builder and half Reach; Elites start from zero.** Once, after the first start with `ELITE_ROLE_ID` set, each non-Elite member's old `member_xp` balance is split into two equal halves and copied into the ledger: one half as **Builder XP**, one as **Reach XP** (an odd point goes to Builder, so 285 becomes 143 + 142). Rows are category `legacy_import`, keys `legacy:{guild}:{user}:{lane}`, stamped at the start of the cycle that is current at that moment, so they count toward that cycle and all-time totals and show on both leaderboards. Members who hold the Elite role are skipped and start from zero (they still appear on the leaderboards, tagged "(Elite)", as soon as they earn). It waits, and logs a warning, until `ELITE_ROLE_ID` is set and found in the server; it cannot run twice (unique keys plus a done flag), skips excluded members, and never modifies the old table. Because the Elite shortlist needs both minimums (100 Builder and 100 Reach by default), a member with 200 or more old points meets both straight away. To correct an individual balance, use `/xpadjust`. The split is set in `points_config.py` (`LEGACY_IMPORT`).
+**Old XP carried over, half Builder and half Reach; Elites start from zero.** Once, after the first start with `ELITE_ROLE_ID` set, each non-Elite member's old `member_xp` balance is split into two equal halves and copied into the ledger: one half as **Builder XP**, one as **Reach XP** (an odd point goes to Builder, so 285 becomes 143 + 142). Rows are category `legacy_import`, keys `legacy:{guild}:{user}:{lane}`, stamped at the start of the cycle that is current at that moment, so they count toward **all-time XP only**. They are left out of every cycle total, so cycle XP starts at 0 for everyone. Members who hold the Elite role are skipped and start from zero (they still appear on the leaderboards, tagged "(Elite)", as soon as they earn). It waits, and logs a warning, until `ELITE_ROLE_ID` is set and found in the server; it cannot run twice (unique keys plus a done flag), skips excluded members, and never modifies the old table. Old points never count toward Elite: only cycle XP does. To correct an individual balance, use `/xpadjust`. The split is set in `points_config.py` (`LEGACY_IMPORT`).
 
 ## Database
 Persistence is Postgres via Supabase, not a local file. **This matters on Railway: a local SQLite file lives on the container's disk, which Railway wipes on every deploy and restart** — warnings, mod logs, appeals, and retention progress would silently vanish every time the bot redeployed. Postgres survives that.
@@ -192,6 +203,7 @@ Then point `SUPABASE_DB_*` (below) at that project and role. `database.py`'s `in
 | POINTS_TZ | No | UTC (points always run on UTC; any other value is only warned about) |
 | CYCLE_START_DATE | No | 2026-10-05 (YYYY-MM-DD, read as 00:00:00 UTC; set your first cycle date) |
 | CYCLE_LENGTH_DAYS | No | 14 |
+| POINTS_CAP | No | 0 (off). Optional ceiling on each member's cycle XP per lane |
 | ELITE_MIN_REACH | No | 100 |
 | ELITE_MIN_BUILDER | No | 100 |
 | ELITE_SLOTS_PER_CYCLE | No | 5 |

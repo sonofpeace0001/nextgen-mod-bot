@@ -396,9 +396,10 @@ class XPCog(commands.Cog):
         if not config.ELITE_ROLE_ID:
             log.warning("ELITE_ROLE_ID is not set: 'above Elite' falls back to the immune roles, Elites are hidden from "
                         "leaderboards, and the legacy XP import is waiting.")
-        log.info("Points ready. Proof channels: %s. Cycle %s (starts %s, %s days).",
+        log.info("Points ready. Proof channels: %s. Cycle %s (starts %s, %s days). Points cap: %s per lane per cycle.",
                  config.PROOF_CHANNELS, self.engine.cycle_of(now_utc()),
-                 self.engine.rules.cycle_start, self.engine.rules.cycle_length)
+                 self.engine.rules.cycle_start, self.engine.rules.cycle_length,
+                 self.engine.rules.points_cap or "none")
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -912,12 +913,13 @@ class XPCog(commands.Cog):
         rows = self.engine.leaderboard(lane, "cycle", now, hide, limit=pc.BOARD["top"])
         body = "\n".join(f"{r}. {self._who(guild, u)} -- {p} XP" for r, u, p in rows) or "No points yet."
         e = discord.Embed(title=self.BOARD_TITLES[lane], color=discord.Color.gold(),
-                          description=f"Cycle {n}, {_cycle_text(start, end)}.\n\n{body}")
+                          description=f"Cycle XP, cycle {n}, {_cycle_text(start, end)}.\n\n{body}")
         alltime = self.engine.leaderboard(lane, "alltime", now, hide, limit=5)
         if alltime:
-            e.add_field(name="All time", value="\n".join(
+            e.add_field(name="All-time XP", value="\n".join(
                 f"{r}. {self._who(guild, u)} -- {p} XP" for r, u, p in alltime), inline=False)
-        e.set_footer(text="Updates automatically")
+        cap = self.engine.rules.points_cap
+        e.set_footer(text="Updates automatically" + (f". Cycle XP is capped at {cap} per lane." if cap else ""))
         e.timestamp = now
         return e
 
@@ -932,6 +934,10 @@ class XPCog(commands.Cog):
 
     async def _delayed_board_refresh(self):
         await asyncio.sleep(pc.BOARD["refresh_delay_seconds"])
+        try:
+            await self.elite_sync()   # an approval may have taken someone to the Elite minimums
+        except Exception:
+            log.exception("Elite role sync failed")
         await self.update_boards()
 
     async def update_boards(self):
@@ -1070,6 +1076,65 @@ class XPCog(commands.Cog):
             for a in self.engine.evaluate_referral(after.id, now_utc(), has_elite=True):
                 log.info("Referral stage paid: %s +%s to %s", a.category, a.points, a.user_id)
 
+    # ---- automatic Elite role --------------------------------------------
+    ELITE_REVIEW_KEY = "elite_review_done"
+
+    async def _announce_elite(self, text):
+        ch = self.bot.get_channel(config.STAFF_REVIEW_CHANNEL_ID) if config.STAFF_REVIEW_CHANNEL_ID else None
+        if ch is not None:
+            try:
+                await ch.send(text, allowed_mentions=discord.AllowedMentions.none())
+            except Exception:
+                log.exception("Could not post the Elite role update")
+
+    async def elite_sync(self):
+        """Elite follows cycle XP. A member who reaches both minimums (cycle XP) at any point in
+        the cycle gets the Elite role straight away. When a cycle closes, every Elite who did not
+        reach both minimums in it loses the role (checked once per finished cycle). The founder
+        and anyone above Elite are never touched. Needs Manage Roles and a bot role above Elite."""
+        if not config.ELITE_ROLE_ID:
+            return
+        n = self.engine.cycle_of(now_utc())
+        rules = self.engine.rules
+        need = f"{rules.elite_min_reach} Reach and {rules.elite_min_builder} Builder XP"
+        for g in self.bot.guilds:
+            role = g.get_role(config.ELITE_ROLE_ID)
+            if role is None:
+                continue
+            for uid, (rp, bp) in self.engine.cycle_qualifiers(n).items():
+                m = g.get_member(uid)
+                if m is None or role in m.roles or is_above_elite(m, g):
+                    continue
+                try:
+                    await m.add_roles(role, reason=f"Reached {need} in cycle {n}")
+                    await self._announce_elite(
+                        f"Elite role given to {m.mention} ({m.display_name}): {rp} Reach and {bp} Builder XP in cycle {n}.")
+                except discord.Forbidden:
+                    log.warning("Cannot give the Elite role to %s: the bot needs Manage Roles and a role above Elite.", uid)
+                except Exception:
+                    log.exception("Could not give the Elite role to %s", uid)
+            prev = n - 1
+            flag = f"{self.ELITE_REVIEW_KEY}:{prev}"
+            if prev < 0 or db.kv_get(flag) == "1":
+                continue
+            kept = self.engine.cycle_qualifiers(prev)
+            failed = False
+            for m in list(role.members):
+                if m.id in kept or is_above_elite(m, g):
+                    continue
+                try:
+                    await m.remove_roles(role, reason=f"Did not reach {need} in cycle {prev}")
+                    await self._announce_elite(
+                        f"Elite role removed from {m.mention} ({m.display_name}): under {need} in cycle {prev}.")
+                except discord.Forbidden:
+                    failed = True
+                    log.warning("Cannot remove the Elite role from %s: the bot needs Manage Roles and a role above Elite.", m.id)
+                except Exception:
+                    failed = True
+                    log.exception("Could not remove the Elite role from %s", m.id)
+            if not failed:
+                db.kv_set(flag, "1")
+
     # ---- scheduled tasks -------------------------------------------------
     @tasks.loop(hours=1)
     async def _hourly(self):
@@ -1082,6 +1147,10 @@ class XPCog(commands.Cog):
         paid = self.engine.sweep_referrals(now_utc(), elite)
         for a in paid:
             log.info("Referral sweep paid: %s +%s to %s", a.category, a.points, a.user_id)
+        try:
+            await self.elite_sync()
+        except Exception:
+            log.exception("Elite role sync failed")
         if paid:
             self.request_board_refresh()
 
@@ -1119,7 +1188,9 @@ class XPCog(commands.Cog):
         for lane, need in ((pc.REACH, s["min_reach"]), (pc.BUILDER, s["min_builder"])):
             rank = f"rank {s[lane + '_rank']}" if s[lane + "_rank"] else "unranked"
             e.add_field(name=f"{LANE_TITLES[lane]} XP",
-                        value=f"{s[lane]} of {need} needed ({rank})\nAll time: {s[lane + '_alltime']}", inline=True)
+                        value=f"Cycle XP: {s[lane]} of {need} needed ({rank})\nAll-time XP: {s[lane + '_alltime']}", inline=True)
+        if self.engine.rules.points_cap:
+            e.set_footer(text=f"Cycle XP is capped at {self.engine.rules.points_cap} per lane.")
         await i.response.send_message(embed=e, ephemeral=True)
 
     PERIOD_CHOICES = [app_commands.Choice(name="This cycle", value="cycle"),
@@ -1400,7 +1471,7 @@ class XPCog(commands.Cog):
         e = discord.Embed(title=f"Cycle {r['cycle']} review", color=discord.Color.gold(),
                           description=(f"{_cycle_text(r['start'], r['end'])}. Needs {rules.elite_min_reach} Reach "
                                        f"and {rules.elite_min_builder} Builder XP. {_plural(rules.elite_slots, 'slot')}. "
-                                       f"This is a shortlist. Choosing and giving the role is a staff decision."))
+                                       f"Members who meet both minimums get the Elite role automatically."))
         sel = "\n".join(
             f"{n}. <@{x['user_id']}>: {x['reach']} Reach, {x['builder']} Builder ({x['total']} total)"
             for n, x in enumerate(r["selected"], 1)) or "Nobody meets both minimums yet."
