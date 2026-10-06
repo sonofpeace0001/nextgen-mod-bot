@@ -638,7 +638,7 @@ class TestLeaderboardAndReview(Base):
 
 
 class TestLegacyImport(Base):
-    OLD = [(10, 1, 3000), (11, 1, 860), (12, 1, 535), (13, 1, 10)]
+    OLD = [(10, 1, 3000), (11, 1, 860), (12, 1, 535), (13, 1, 10), (15, 1, 285), (16, 1, 1)]
     ELITES = {10}   # member 10 holds the Elite role
 
     def setUp(self):
@@ -653,40 +653,65 @@ class TestLegacyImport(Base):
     def run_import(self, when=dt(2026, 10, 6, 9)):
         return self.e.import_legacy_xp(when, skip_ids=self.ELITES)
 
-    def test_old_balances_become_builder_xp_stamped_at_the_start_of_the_current_cycle(self):
+    def test_each_balance_is_split_in_half_between_builder_and_reach(self):
         res = self.run_import()
-        self.assertEqual((res["imported"], res["points"], res["already"], res["excluded"]), (3, 1405, 0, 0))
-        self.assertEqual(res["stamp"], "2026-10-05 00:00:00")
-        row = self.s.get_award("legacy:1:11")
+        self.assertEqual((self.pts(11, "builder"), self.pts(11, "reach")), (430, 430))     # 860
+        self.assertEqual((self.pts(13, "builder"), self.pts(13, "reach")), (5, 5))         # 10
+        self.assertEqual((res["imported"], res["points"], res["builder"], res["reach"]), (5, 1691, 847, 844))
+        row = self.s.get_award("legacy:1:11:reach")
         self.assertEqual((row["lane"], row["category"], row["points"], row["created_at"], row["submission_id"]),
-                         ("builder", "legacy_import", 860, "2026-10-05 00:00:00", None))
-        self.assertEqual(self.pts(11, "builder"), 860)
-        self.assertEqual(self.pts(11, "reach"), 0)
-        self.assertIsNone(self.s.get_award("legacy:1:14"))  # a zero balance is not imported
+                         ("reach", "legacy_import", 430, "2026-10-05 00:00:00", None))
+        self.assertEqual(res["stamp"], "2026-10-05 00:00:00")
+
+    def test_an_odd_point_goes_to_builder(self):
+        self.run_import()
+        self.assertEqual((self.pts(12, "builder"), self.pts(12, "reach")), (268, 267))     # 535
+        self.assertEqual((self.pts(15, "builder"), self.pts(15, "reach")), (143, 142))     # 285
+        for uid in (11, 12, 13, 15):
+            self.assertEqual(self.pts(uid, "builder") + self.pts(uid, "reach"),
+                             dict((u, x) for u, _g, x in self.OLD)[uid])                   # nothing lost, nothing added
+
+    def test_a_single_point_goes_to_builder_and_no_empty_reach_row_is_written(self):
+        self.run_import()
+        self.assertEqual((self.pts(16, "builder"), self.pts(16, "reach")), (1, 0))
+        self.assertIsNone(self.s.get_award("legacy:1:16:reach"))
+
+    def test_a_zero_balance_is_not_imported(self):
+        self.run_import()
+        self.assertIsNone(self.s.get_award("legacy:1:14:builder"))
+        self.assertIsNone(self.s.get_award("legacy:1:14:reach"))
 
     def test_elites_start_from_zero(self):
         res = self.run_import()
         self.assertEqual(res["elite"], 1)
-        self.assertIsNone(self.s.get_award("legacy:1:10"))
         self.assertEqual(self.pts(10), 0)  # the old 3,000 is not carried over for an Elite
+        self.assertIsNone(self.s.get_award("legacy:1:10:builder"))
 
     def test_it_is_idempotent(self):
         first = self.run_import()
         again = self.run_import(dt(2026, 10, 7))
-        self.assertEqual((again["imported"], again["already"], again["points"]), (0, 3, 0))
-        self.assertEqual(self.pts(11, "builder"), 860)
+        self.assertEqual((again["imported"], again["already"], again["points"]), (0, 5, 0))
+        self.assertEqual(self.pts(11, "builder"), 430)
         self.assertEqual(sum(r["pts"] for r in self.s.lane_totals("0", "9")), first["points"])
+
+    def test_a_half_finished_import_is_completed_without_double_paying(self):
+        self.s.insert_award(guild_id=1, user_id=11, lane="builder", category="legacy_import", points=430, reason="",
+                            submission_id=None, award_key="legacy:1:11:builder", awarded_by=None,
+                            created_at="2026-10-05 00:00:00")
+        res = self.run_import()
+        self.assertEqual((self.pts(11, "builder"), self.pts(11, "reach")), (430, 430))
+        self.assertEqual(res["imported"], 5)
 
     def test_a_later_import_is_stamped_in_the_cycle_it_runs_in(self):
         res = self.run_import(dt(2026, 10, 20))
         self.assertEqual(res["stamp"], "2026-10-19 00:00:00")
-        self.assertEqual(self.pts(11, "builder", *self.e.cycle_range(1)), 860)
+        self.assertEqual(self.pts(11, "reach", *self.e.cycle_range(1)), 430)
         self.assertEqual(self.pts(11, "builder", *self.e.cycle_range(0)), 0)
 
     def test_excluded_members_are_skipped(self):
         self.s.exclude(11, "test")
         res = self.run_import()
-        self.assertEqual((res["imported"], res["excluded"]), (2, 1))
+        self.assertEqual((res["imported"], res["excluded"]), (4, 1))
         self.assertEqual(self.pts(11), 0)
 
     def test_the_old_table_is_left_exactly_as_it_was(self):
@@ -694,31 +719,31 @@ class TestLegacyImport(Base):
         self.run_import()
         self.assertEqual(self.old_rows(), before)
 
-    def test_imported_xp_shows_on_the_builder_board_only_and_an_elite_can_still_appear_by_earning(self):
+    def test_imported_points_show_on_both_boards_and_an_elite_can_still_appear_by_earning(self):
         self.run_import()
-        board = self.e.leaderboard("builder", "cycle", dt(2026, 10, 6))
-        self.assertEqual([(r, u, p) for r, u, p in board], [(1, 11, 860), (2, 12, 535), (3, 13, 10)])
-        self.assertEqual(self.e.leaderboard("reach", "cycle", dt(2026, 10, 6)), [])
+        build = self.e.leaderboard("builder", "cycle", dt(2026, 10, 6))
+        reach = self.e.leaderboard("reach", "cycle", dt(2026, 10, 6))
+        self.assertEqual([(r, u, p) for r, u, p in build][:3], [(1, 11, 430), (2, 12, 268), (3, 15, 143)])
+        self.assertEqual([(r, u, p) for r, u, p in reach][:3], [(1, 11, 430), (2, 12, 267), (3, 15, 142)])
         # the Elite is visible as soon as they earn something, starting from zero
         self.approve(self.post(10, "build", dt(2026, 10, 7)), "build_demo")
-        board = self.e.leaderboard("builder", "cycle", dt(2026, 10, 8))
-        self.assertIn((3, 10, 20), board)
+        self.assertIn((4, 10, 20), self.e.leaderboard("builder", "cycle", dt(2026, 10, 8)))
 
-    def test_imported_builder_xp_alone_does_not_make_the_shortlist(self):
+    def test_members_with_200_or_more_old_points_meet_both_minimums_straight_away(self):
         self.run_import()
         review = self.e.cycle_review(dt(2026, 10, 6), is_elite=lambda u: u in self.ELITES)
-        self.assertEqual(review["selected"], [])
-        self.assertEqual(sorted(x["user_id"] for x in review["near_misses"]), [11, 12])
-        self.assertTrue(all(x["missing"] == "reach" for x in review["near_misses"]))
-        self.assertEqual(review["top_builder"]["user_id"], 11)
+        self.assertEqual([x["user_id"] for x in review["selected"]], [11, 12, 15])           # 860, 535, 285 (each half is at least 100)
+        self.assertEqual(review["selected"][0]["reach"], 430)
+        self.assertEqual(review["near_misses"], [])                                          # 10 and 1 are nowhere near
 
-    def test_a_member_who_then_earns_reach_xp_qualifies(self):
+    def test_members_under_200_old_points_are_near_misses_not_qualifiers(self):
+        self.s._exec("INSERT INTO member_xp (user_id, guild_id, xp) VALUES (%s,%s,%s)", (17, 1, 170))
+        self.s._exec("INSERT INTO member_xp (user_id, guild_id, xp) VALUES (%s,%s,%s)", (18, 1, 199))
         self.run_import()
-        for n in range(4):  # 4 x 25 = 100 Reach
-            self.approve(self.post(11, "reach", dt(2026, 10, 7 + n), url=f"x.com/a/status/{n}"), "post_original")
-        review = self.e.cycle_review(dt(2026, 10, 12), is_elite=lambda u: u in self.ELITES)
-        self.assertEqual([x["user_id"] for x in review["selected"]], [11])
-        self.assertEqual((review["selected"][0]["reach"], review["selected"][0]["builder"]), (100, 860))
+        review = self.e.cycle_review(dt(2026, 10, 6), is_elite=lambda u: u in self.ELITES)
+        self.assertNotIn(17, [x["user_id"] for x in review["selected"]])                     # 85 + 85
+        self.assertNotIn(18, [x["user_id"] for x in review["selected"]])                     # 100 + 99: one short on Reach
+        self.assertEqual((self.pts(18, "builder"), self.pts(18, "reach")), (100, 99))
 
     def test_imported_xp_does_not_use_up_daily_caps_or_trigger_bonuses(self):
         self.run_import(dt(2026, 10, 5, 12))

@@ -659,14 +659,17 @@ class Engine:
 
     # ---- legacy import ---------------------------------------------------
     def import_legacy_xp(self, now, skip_ids=()):
-        """Copy the old single XP balances into the ledger as Builder XP, once per member.
-        Members in skip_ids (the Elites) start from zero and are not imported. Stamped at the
-        start of the current cycle. Idempotent (unique award_key per member), skips excluded
-        members, and never touches the old table."""
+        """Copy the old single XP balances into the ledger, split into equal halves across the
+        lanes in points_config.LEGACY_IMPORT (Builder gets any odd point). Members in skip_ids
+        (the Elites) start from zero and are not imported. Stamped at the start of the current
+        cycle. Idempotent (a unique award_key per member and lane), skips excluded members, and
+        never touches the old table."""
         cfg = pc.LEGACY_IMPORT
+        lanes = cfg["lanes"]
         skip_ids = set(skip_ids)
         stamp = self.cycle_range(self.cycle_of(now))[0]
-        out = {"imported": 0, "already": 0, "excluded": 0, "elite": 0, "points": 0, "stamp": stamp}
+        out = {"imported": 0, "already": 0, "excluded": 0, "elite": 0, "points": 0, "stamp": stamp,
+               **{lane: 0 for lane in lanes}}
         for r in self.store.legacy_xp_rows():
             if r["user_id"] in skip_ids:
                 out["elite"] += 1
@@ -674,15 +677,22 @@ class Engine:
             if self.store.is_excluded(r["user_id"]):
                 out["excluded"] += 1
                 continue
-            row_id = self._insert(
-                guild_id=r["guild_id"], user_id=r["user_id"], lane=cfg["lane"], category=cfg["category"],
-                points=int(r["xp"]), reason=cfg["reason"], submission_id=None,
-                award_key=f"legacy:{r['guild_id']}:{r['user_id']}", awarded_by=None, created_at=stamp)
-            if row_id is None:
-                out["already"] += 1
-            else:
-                out["imported"] += 1
-                out["points"] += int(r["xp"])
+            xp = int(r["xp"])
+            base, extra = divmod(xp, len(lanes))
+            inserted = False
+            for n, lane in enumerate(lanes):
+                share = base + (1 if n < extra else 0)
+                if share <= 0:
+                    continue
+                row_id = self._insert(
+                    guild_id=r["guild_id"], user_id=r["user_id"], lane=lane, category=cfg["category"],
+                    points=share, reason=cfg["reason"], submission_id=None,
+                    award_key=f"legacy:{r['guild_id']}:{r['user_id']}:{lane}", awarded_by=None, created_at=stamp)
+                if row_id is not None:
+                    inserted = True
+                    out[lane] += share
+                    out["points"] += share
+            out["imported" if inserted else "already"] += 1
         return out
 
     # ---- referrals -------------------------------------------------------

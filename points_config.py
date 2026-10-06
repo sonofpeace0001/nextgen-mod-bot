@@ -139,12 +139,13 @@ ENGAGE = dict(
     button_labels={"like": "Like", "retweet": "Retweet", "comment": "Comment"},
 )
 
-# One-time import of the old single XP balance (member_xp) into the ledger, as Builder XP.
-# Members who hold the Elite role start from zero and are skipped. Each other member gets one
-# row keyed legacy:{guild}:{user}, so running it again changes nothing. Rows are stamped at the
-# start of the cycle that is current when the import runs, so they count toward that cycle and
-# toward all-time totals.
-LEGACY_IMPORT = dict(lane=BUILDER, category="legacy_import", reason="imported from the old XP balance")
+# One-time import of the old single XP balance (member_xp) into the ledger. Each balance is split
+# into equal halves across `lanes` (an odd point goes to the first lane, Builder), so a member with
+# 285 old points gets 143 Builder and 142 Reach. Members who hold the Elite role start from zero and
+# are skipped. Each lane row has its own key legacy:{guild}:{user}:{lane}, so running it again
+# changes nothing. Rows are stamped at the start of the cycle that is current when the import runs,
+# so they count toward that cycle and toward all-time totals.
+LEGACY_IMPORT = dict(lanes=[BUILDER, REACH], category="legacy_import", reason="imported from the old XP balance")
 
 # Builder channels accept any post (a link, a screenshot or just text such as "task completed").
 # Text-only posts shorter than this are ignored so a quick "ok" does not create a review.

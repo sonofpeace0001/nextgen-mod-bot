@@ -422,7 +422,7 @@ class XPCog(commands.Cog):
     LEGACY_FLAG = "points_legacy_import_done"
 
     async def _run_legacy_import(self):
-        """One-time import of the old XP balances as Builder XP. Elites start from zero, so it
+        """One-time import of the old XP balances, split half Builder and half Reach. Elites start from zero, so it
         needs to know who they are and waits until ELITE_ROLE_ID is set. Safe to run at every
         start (a done flag, plus a unique ledger key per member). A failure is logged and
         retried at the next start; it never stops the bot."""
@@ -443,9 +443,9 @@ class XPCog(commands.Cog):
             elite = {m.id for r in roles for m in r.members}
             res = self.engine.import_legacy_xp(now_utc(), elite)
             db.kv_set(self.LEGACY_FLAG, "1")
-            log.info("Legacy XP import: %s members, %s Builder XP added (%s Elites start from zero, %s already "
-                     "imported, %s excluded), stamped %s UTC.", res["imported"], res["points"], res["elite"],
-                     res["already"], res["excluded"], res["stamp"])
+            log.info("Legacy XP import: %s members, %s Builder XP and %s Reach XP added (%s Elites start from zero, "
+                     "%s already imported, %s excluded), stamped %s UTC.", res["imported"], res[pc.BUILDER],
+                     res[pc.REACH], res["elite"], res["already"], res["excluded"], res["stamp"])
         except Exception:
             self._legacy_checked = False
             log.exception("Legacy XP import failed; it will be retried at the next ready event.")

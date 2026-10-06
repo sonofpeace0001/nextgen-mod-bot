@@ -315,7 +315,8 @@ class TestCycleReviewCommand(CommandCase):
 
 
 class TestLegacyStartup(CommandCase):
-    SUMMARY = {"imported": 12, "points": 2580, "already": 0, "excluded": 0, "elite": 1, "stamp": "2026-10-05 00:00:00"}
+    SUMMARY = {"imported": 12, "points": 2580, "builder": 1290, "reach": 1290, "already": 0, "excluded": 0, "elite": 1,
+               "stamp": "2026-10-05 00:00:00"}
 
     def setUp(self):
         self.elite_members = [SimpleNamespace(id=10), SimpleNamespace(id=11)]
