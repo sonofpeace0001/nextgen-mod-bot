@@ -309,7 +309,7 @@ class TestCycleReviewCommand(CommandCase):
         self.assertNotIn("<@1002>", names["Meets both minimums"])      # already Elite
         self.assertNotIn("<@1003>", names["Meets both minimums"])      # only one lane
         self.assertIn("<@1003>", names["Near misses (one lane met)"])
-        self.assertIn("Choosing and giving the role is a staff decision", posted.description)
+        self.assertIn("get the Elite role automatically", posted.description)
         i.followup.send.assert_awaited()
         self.assertEqual(self.guild.get_channel(BUILD).send.await_count, 0)  # nothing public
 
