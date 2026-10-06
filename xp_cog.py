@@ -1190,7 +1190,7 @@ class XPCog(commands.Cog):
             e.add_field(name=f"{LANE_TITLES[lane]} XP",
                         value=f"Cycle XP: {s[lane]} of {need} needed ({rank})\nAll-time XP: {s[lane + '_alltime']}", inline=True)
         if self.engine.rules.points_cap:
-            e.set_footer(text=f"Cycle XP is capped at {self.engine.rules.points_cap} per lane. Cycle XP starts at 0 for everyone and decides Elite.")
+            e.set_footer(text=f"Cycle XP is capped at {self.engine.rules.points_cap} per lane.")
         await i.response.send_message(embed=e, ephemeral=True)
 
     PERIOD_CHOICES = [app_commands.Choice(name="This cycle", value="cycle"),

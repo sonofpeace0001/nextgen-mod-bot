@@ -930,10 +930,10 @@ class TestPointsCap(Base):
         a = self.approve(self.post(13, "reach", MON, url="x.com/a/status/2"), "official_engage").awards[0]
         self.assertEqual(a.points, 0)
 
-    def test_the_default_setting_is_100(self):
+    def test_there_is_no_cap_by_default(self):
         import config
         self.assertEqual(xe.Rules.from_config(config).points_cap, config.POINTS_CAP)
-        self.assertEqual(config.POINTS_CAP, 100)
+        self.assertEqual(config.POINTS_CAP, 0)
 
 
 def a_sid(case):

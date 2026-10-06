@@ -81,15 +81,15 @@ Elites can earn and are shown, tagged "(Elite)" next to their name. The founder,
 `xp_ledger` is the source of truth and leaderboards are `SUM` queries over it. Every award has a unique `award_key` (for example `{submission_id}:{category}`), so a double click, a retry or a restart can never pay twice. Daily caps (official engagement 30 points per UTC day; 3 counted own posts per UTC day), once-per-link rules, weekly streak bonuses (5 distinct UTC days: own posts +30 Reach, Academy +20 Builder), referrals, learn together and the weekly challenge are all in `xp_engine.py`. No LLM is used to score or review.
 
 ### All-time XP and cycle XP
-Every member has two numbers per lane. **All-time XP** is everything ever earned, including the old imported points and the one-off correction, and is what the leaderboards list under "All-time XP". **Cycle XP** is what was earned in the current 14-day cycle from proof, claims, bonuses and staff awards only; the legacy import and the correction are excluded, so **everyone starts at 0**, and it goes back to 0 at each cycle rollover (00:00 UTC). Cycle XP is what decides Elite.
+Every member has two numbers per lane. **All-time XP** is everything ever earned, including the old imported points and the one-off correction, and is what the leaderboards list under "All-time XP". **Cycle XP** is what was earned in the current 14-day cycle from proof, claims, bonuses and staff awards only; the legacy import and the correction are excluded, so **everyone starts at 0**, and it goes back to 0 at each cycle rollover (00:00 UTC). Cycle XP is what decides Elite. All-time XP is everything a member has accumulated since joining.
 
 ### Automatic Elite role
 - The moment a member's cycle XP reaches **both** `ELITE_MIN_REACH` and `ELITE_MIN_BUILDER` (100 and 100 by default), the bot gives them the Elite role and says so in the log channel. It checks a few seconds after every approval and hourly, so there is no waiting for the end of the cycle and no slot limit (`ELITE_SLOTS_PER_CYCLE` now only shapes `/cycle review`).
 - When a cycle closes, every Elite who did not reach both minimums in that cycle loses the role (checked once per finished cycle, announced in the log channel). Reaching them again later in a cycle gives it straight back. Nothing is removed during the first cycle (`CYCLE_START_DATE`), since there is no earlier cycle to judge.
 - The founder and anyone above the Elite role are never changed. The bot needs **Manage Roles** and its own role must sit above the Elite role; otherwise it logs a warning and retries at the next check.
 
-### Cycle cap (for now)
-Cycle XP is capped at `POINTS_CAP` (default **100**) **per lane per cycle**, so a member can earn at most 100 Reach and 100 Builder XP in a cycle, which is exactly the Elite bar. An award that would take someone past it is trimmed ("trimmed to the 100 point cycle cap"), and at the cap it pays 0 ("cycle cap reached"); this covers reviewed proof, claims, bonuses, referral payouts and `/award`. Staff corrections with `/xpadjust` and the one-off import are not capped, and all-time XP is not capped on its own: it keeps growing across cycles. Set `POINTS_CAP=0` to remove the cap.
+### No cap on points
+There is no ceiling: members can earn as much as they like in both lanes, and 100 Reach and 100 Builder cycle XP is only the **minimum** for Elite (1000 and 1000 is fine). `POINTS_CAP` is an optional per-lane cycle ceiling and is off (0) by default.
 
 ### Editing the numbers
 All point values, caps, bonuses and referral/challenge rules live in `points_config.py` (data only, no logic). Edit a number there and redeploy. Elite thresholds, slots, cycle length and windows are environment variables (table below).
@@ -203,7 +203,7 @@ Then point `SUPABASE_DB_*` (below) at that project and role. `database.py`'s `in
 | POINTS_TZ | No | UTC (points always run on UTC; any other value is only warned about) |
 | CYCLE_START_DATE | No | 2026-10-05 (YYYY-MM-DD, read as 00:00:00 UTC; set your first cycle date) |
 | CYCLE_LENGTH_DAYS | No | 14 |
-| POINTS_CAP | No | 100 (a ceiling on each member's cycle XP per lane; 0 turns it off) |
+| POINTS_CAP | No | 0 (off). Optional ceiling on each member's cycle XP per lane |
 | ELITE_MIN_REACH | No | 100 |
 | ELITE_MIN_BUILDER | No | 100 |
 | ELITE_SLOTS_PER_CYCLE | No | 5 |
