@@ -412,6 +412,7 @@ class XPCog(commands.Cog):
                                 "so the bot stays silent there and proof intake is off.", key, ch.name)
             await self._cache_invites(g)
         await self._run_legacy_import()
+        await self._run_corrections()
         if not self._hourly.is_running():
             self._hourly.start()
         if config.XP_LEADERBOARD_ENABLED and config.LEADERBOARD_CHANNEL_ID and not self._daily_board.is_running():
@@ -420,6 +421,24 @@ class XPCog(commands.Cog):
         await self.update_boards()
 
     LEGACY_FLAG = "points_legacy_import_done"
+
+    async def _run_corrections(self):
+        """One-off point corrections (points_config.CORRECTIONS), each applied once. They wait for
+        the legacy import so they never run before the balances exist, and a failure is logged and
+        retried at the next ready event; it never stops the bot."""
+        try:
+            if db.kv_get(self.LEGACY_FLAG) != "1":
+                return
+            for corr in pc.CORRECTIONS:
+                flag = f"points_correction_done:{corr['key']}"
+                if db.kv_get(flag) == "1":
+                    continue
+                res = self.engine.apply_correction(corr, now_utc())
+                db.kv_set(flag, "1")
+                log.info("Points correction %s: %s balances lowered by %s points in total, %s unchanged.",
+                         corr["key"], res["changed"], res["removed"], res["unchanged"])
+        except Exception:
+            log.exception("Points correction failed; it will be retried at the next ready event.")
 
     async def _run_legacy_import(self):
         """One-time import of the old XP balances, split half Builder and half Reach. Elites start from zero, so it

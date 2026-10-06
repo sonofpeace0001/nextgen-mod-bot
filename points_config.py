@@ -147,6 +147,15 @@ ENGAGE = dict(
 # so they count toward that cycle and toward all-time totals.
 LEGACY_IMPORT = dict(lanes=[BUILDER, REACH], category="legacy_import", reason="imported from the old XP balance")
 
+# One-off corrections, each applied once (a kv done flag, plus a unique key per member and lane).
+# A correction scales every lane balance by factor_num/factor_den, rounding UP (so 5 becomes 3 when
+# halving), then caps the result at `cap`. It only ever lowers a balance, and it is written as an
+# ordinary ledger adjustment row, so the history stays visible and nothing is deleted.
+CORRECTIONS = [
+    dict(key="halve-cap-2026-10-06", factor_num=1, factor_den=2, cap=100,
+         reason="owner correction 2026-10-06: halved, then capped at 100 per lane"),
+]
+
 # Builder channels accept any post (a link, a screenshot or just text such as "task completed").
 # Text-only posts shorter than this are ignored so a quick "ok" does not create a review.
 MIN_TEXT_ONLY_CHARS = 8

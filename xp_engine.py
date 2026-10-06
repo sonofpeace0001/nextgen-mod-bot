@@ -695,6 +695,33 @@ class Engine:
             out["imported" if inserted else "already"] += 1
         return out
 
+    # ---- one-off corrections ---------------------------------------------
+    def apply_correction(self, corr, now):
+        """Scale every lane balance by factor_num/factor_den (rounding up), then cap it, writing
+        the difference as an adjustment row per member and lane. Only lowers balances. Safe to
+        run twice: each row has a unique award_key, so a second run changes nothing."""
+        out = {"changed": 0, "removed": 0, "unchanged": 0}
+        for b in self.store.lane_balances():
+            bal = b["pts"]
+            if bal <= 0:
+                out["unchanged"] += 1
+                continue
+            scaled = -((-bal * corr["factor_num"]) // corr["factor_den"])   # ceiling division
+            target = min(corr["cap"], scaled)
+            if target >= bal:
+                out["unchanged"] += 1
+                continue
+            row = self._insert(
+                guild_id=b["guild_id"], user_id=b["user_id"], lane=b["lane"], category="adjustment",
+                points=target - bal, reason=corr["reason"], submission_id=None,
+                award_key=f"adjust:{corr['key']}:{b['user_id']}:{b['lane']}", awarded_by=None, created_at=ts(now))
+            if row is None:
+                out["unchanged"] += 1
+            else:
+                out["changed"] += 1
+                out["removed"] += bal - target
+        return out
+
     # ---- referrals -------------------------------------------------------
     def register_referral(self, guild_id, invitee_id, inviter_id, joined_at, account_created_at, now):
         """Attribute an invitee to an inviter. First attribution wins. Returns a dict with

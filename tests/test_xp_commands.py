@@ -389,6 +389,39 @@ class TestLegacyStartup(CommandCase):
         self.assertTrue(self.cog.hide_fn(self.guild)(30))        # left the server
 
 
+class TestCorrectionStartup(CommandCase):
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.kv = {xp_cog.XPCog.LEGACY_FLAG: "1"}
+        xp_cog.db.kv_get.side_effect = lambda k, d=None: self.kv.get(k, d)
+        xp_cog.db.kv_set.side_effect = lambda k, v: self.kv.__setitem__(k, str(v))
+        self.cog.engine = mock.MagicMock()
+        self.cog.engine.apply_correction.return_value = {"changed": 6, "removed": 2000, "unchanged": 6}
+        self.flag = f"points_correction_done:{pc.CORRECTIONS[0]['key']}"
+
+    async def test_it_runs_once_and_sets_its_done_flag(self):
+        await self.cog._run_corrections()
+        self.cog.engine.apply_correction.assert_called_once()
+        self.assertEqual(self.cog.engine.apply_correction.call_args.args[0], pc.CORRECTIONS[0])
+        self.assertEqual(self.kv[self.flag], "1")
+        await self.cog._run_corrections()
+        self.cog.engine.apply_correction.assert_called_once()   # not again
+
+    async def test_it_waits_until_the_legacy_import_is_done(self):
+        del self.kv[xp_cog.XPCog.LEGACY_FLAG]
+        await self.cog._run_corrections()
+        self.cog.engine.apply_correction.assert_not_called()
+        self.assertNotIn(self.flag, self.kv)
+
+    async def test_a_failure_never_stops_startup_and_is_retried(self):
+        self.cog.engine.apply_correction.side_effect = RuntimeError("db down")
+        await self.cog._run_corrections()          # must not raise
+        self.assertNotIn(self.flag, self.kv)       # so the next ready event tries again
+        self.cog.engine.apply_correction.side_effect = None
+        await self.cog._run_corrections()
+        self.assertEqual(self.kv[self.flag], "1")
+
+
 class TestIntakeGuards(CommandCase):
     async def test_intake_stays_silent_in_ignored_announcement_and_ticket_channels(self):
         msg = proof_message(900, member(7), BUILD, "no proof here")
