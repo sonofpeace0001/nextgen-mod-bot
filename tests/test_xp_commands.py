@@ -85,7 +85,7 @@ class TestPublicCommands(CommandCase):
         text = " ".join(f.value for f in embed.fields)
         self.assertIn("60 of 100 needed (rank 2)", text)
         self.assertIn("30 of 100 needed (rank 1)", text)
-        self.assertIn("All time: 60", text)
+        self.assertIn("All-time XP: 60", text)
 
     async def test_leaderboard_is_paginated_and_skips_excluded_members(self):
         for n in range(25):

@@ -721,20 +721,23 @@ class TestLegacyImport(Base):
 
     def test_imported_points_show_on_both_boards_and_an_elite_can_still_appear_by_earning(self):
         self.run_import()
-        build = self.e.leaderboard("builder", "cycle", dt(2026, 10, 6))
-        reach = self.e.leaderboard("reach", "cycle", dt(2026, 10, 6))
+        build = self.e.leaderboard("builder", "alltime", dt(2026, 10, 6))
+        reach = self.e.leaderboard("reach", "alltime", dt(2026, 10, 6))
         self.assertEqual([(r, u, p) for r, u, p in build][:3], [(1, 11, 430), (2, 12, 268), (3, 15, 143)])
         self.assertEqual([(r, u, p) for r, u, p in reach][:3], [(1, 11, 430), (2, 12, 267), (3, 15, 142)])
         # the Elite is visible as soon as they earn something, starting from zero
         self.approve(self.post(10, "build", dt(2026, 10, 7)), "build_demo")
-        self.assertIn((4, 10, 20), self.e.leaderboard("builder", "cycle", dt(2026, 10, 8)))
+        self.assertIn((4, 10, 20), self.e.leaderboard("builder", "alltime", dt(2026, 10, 8)))
 
-    def test_members_with_200_or_more_old_points_meet_both_minimums_straight_away(self):
+    def test_imported_points_do_not_count_as_cycle_xp(self):
         self.run_import()
-        review = self.e.cycle_review(dt(2026, 10, 6), is_elite=lambda u: u in self.ELITES)
-        self.assertEqual([x["user_id"] for x in review["selected"]], [11, 12, 15])           # 860, 535, 285 (each half is at least 100)
-        self.assertEqual(review["selected"][0]["reach"], 430)
-        self.assertEqual(review["near_misses"], [])                                          # 10 and 1 are nowhere near
+        now = dt(2026, 10, 6)
+        self.assertEqual(self.e.leaderboard("builder", "cycle", now), [])                    # everyone starts at 0
+        review = self.e.cycle_review(now, is_elite=lambda u: u in self.ELITES)
+        self.assertEqual((review["selected"], review["near_misses"]), ([], []))
+        self.assertEqual(self.e.cycle_qualifiers(0), {})
+        summary = self.e.user_summary(11, now)
+        self.assertEqual((summary["builder"], summary["builder_alltime"]), (0, 430))
 
     def test_members_under_200_old_points_are_near_misses_not_qualifiers(self):
         self.s._exec("INSERT INTO member_xp (user_id, guild_id, xp) VALUES (%s,%s,%s)", (17, 1, 170))
@@ -814,10 +817,10 @@ class TestHalveAndCapCorrection(Base):
             self.give(uid, "builder", amount)
             self.give(uid, "reach", amount)
         self.e.apply_correction(self.CORR, dt(2026, 10, 6, 14))
-        board = self.e.leaderboard("builder", "cycle", dt(2026, 10, 6, 15))
+        board = self.e.leaderboard("builder", "alltime", dt(2026, 10, 6, 15))
         self.assertEqual([(r, u, p) for r, u, p in board], [(1, 13, 100), (2, 14, 20)])
-        review = self.e.cycle_review(dt(2026, 10, 6, 15))
-        self.assertEqual([x["user_id"] for x in review["selected"]], [13])         # exactly at both minimums
+        self.assertEqual(self.e.leaderboard("builder", "cycle", dt(2026, 10, 6, 15)), [])   # cycle XP is still 0
+        self.assertEqual(self.e.cycle_review(dt(2026, 10, 6, 15))["selected"], [])
 
     def test_points_earned_after_the_correction_are_kept_in_full(self):
         self.give(15, "builder", 60)
@@ -831,7 +834,7 @@ class TestHalveAndCapCorrection(Base):
 
 
 class TestPointsCap(Base):
-    """A permanent (for now) ceiling of 100 per member per lane."""
+    """A ceiling of 100 cycle XP per member per lane (for now). All-time XP is not capped by itself."""
 
     def setUp(self):
         super().setUp()
@@ -846,14 +849,14 @@ class TestPointsCap(Base):
         self.seed(7, "builder", 90)
         a = self.approve(self.post(7, "build", MON), "build_demo").awards[0]       # worth 20
         self.assertEqual(a.points, 10)
-        self.assertIn("trimmed to the 100 point cap", a.notes)
+        self.assertIn("trimmed to the 100 point cycle cap", a.notes)
         self.assertEqual(self.pts(7, "builder"), 100)
 
     def test_at_the_cap_an_award_pays_nothing_and_says_so(self):
         self.seed(7, "builder", 100)
         a = self.approve(self.post(7, "build", MON), "build_project").awards[0]
         self.assertEqual(a.points, 0)
-        self.assertIn("points cap reached", a.notes)
+        self.assertIn("cycle cap reached", a.notes)
         self.assertEqual(self.pts(7, "builder"), 100)
         self.assertEqual(self.s.get_award(f"{a_sid(self)}:build_project")["points"], 0)   # the zero row is on record
 
@@ -862,11 +865,19 @@ class TestPointsCap(Base):
         a = self.approve(self.post(7, "reach", MON, url="x.com/a/status/1"), "post_original").awards[0]
         self.assertEqual((a.points, self.pts(7, "builder"), self.pts(7, "reach")), (25, 100, 25))
 
-    def test_it_holds_across_cycles_because_it_is_the_all_time_balance(self):
+    def test_the_cap_resets_with_each_cycle_and_all_time_keeps_growing(self):
         self.seed(7, "builder", 100)
-        later = dt(2026, 10, 25)                       # cycle 1
+        later = dt(2026, 10, 25)                       # cycle 1: cycle XP is back to 0
         a = self.approve(self.post(7, "build", later), "build_share", now=later).awards[0]
-        self.assertEqual(a.points, 0)
+        self.assertGreater(a.points, 0)
+        self.assertEqual(self.pts(7, "builder"), 100 + a.points)                  # all-time passes 100
+
+    def test_legacy_and_correction_rows_do_not_use_up_the_cycle_cap(self):
+        self.s.insert_award(guild_id=1, user_id=7, lane="builder", category="legacy_import", points=100, reason="",
+                            submission_id=None, award_key="legacy:1:7:builder", awarded_by=None,
+                            created_at="2026-10-05 00:00:00")
+        a = self.approve(self.post(7, "build", MON), "build_demo").awards[0]
+        self.assertEqual(a.points, 20)
 
     def test_engagement_claims_are_capped_too(self):
         self.seed(7, "reach", 99)
@@ -883,7 +894,7 @@ class TestPointsCap(Base):
         bonus = self.e._bonus(sub_or_none=None, guild_id=1, user_id=8, lane="reach", category="streak_posts", points=30,
                               reason="streak", key="streak:test", created_at=xe.ts(MON))
         self.assertEqual((bonus.points, bonus.base, self.pts(8, "reach")), (10, 30, 100))
-        self.assertIn("trimmed to the 100 point cap", bonus.notes)
+        self.assertIn("trimmed to the 100 point cycle cap", bonus.notes)
 
     def test_staff_awards_are_capped_but_staff_adjustments_are_not(self):
         self.seed(9, "builder", 95)

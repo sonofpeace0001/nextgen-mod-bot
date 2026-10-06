@@ -270,14 +270,34 @@ class Store:
             "AND s.created_at>=%s AND s.created_at<%s LIMIT 1",
             (user_id, lesson_day, start, end)) is not None
 
-    def lane_totals(self, start, end, lane=None):
+    @staticmethod
+    def _skip_sql(skip_categories, skip_key_prefixes):
+        """SQL (and params) leaving out baseline rows, so cycle XP starts at zero for everyone."""
+        sql, params = "", []
+        if skip_categories:
+            sql += f" AND category NOT IN ({_marks(len(skip_categories))})"
+            params += list(skip_categories)
+        for pre in skip_key_prefixes:
+            sql += " AND award_key NOT LIKE %s"
+            params.append(pre + "%")
+        return sql, params
+
+    def lane_totals(self, start, end, lane=None, skip_categories=(), skip_key_prefixes=()):
         sql = (f"SELECT user_id, lane, COALESCE(SUM(points),0) AS pts FROM {self.p}xp_ledger "
                "WHERE created_at>=%s AND created_at<%s")
         params = [start, end]
         if lane:
             sql += " AND lane=%s"; params.append(lane)
-        sql += " GROUP BY user_id, lane"
-        return [dict(user_id=r["user_id"], lane=r["lane"], pts=int(r["pts"])) for r in self._all(sql, params)]
+        extra, more = self._skip_sql(skip_categories, skip_key_prefixes)
+        sql += extra + " GROUP BY user_id, lane"
+        return [dict(user_id=r["user_id"], lane=r["lane"], pts=int(r["pts"]))
+                for r in self._all(sql, params + more)]
+
+    def lane_total_for(self, user_id, lane, start, end, skip_categories=(), skip_key_prefixes=()):
+        sql = (f"SELECT COALESCE(SUM(points),0) AS pts FROM {self.p}xp_ledger "
+               "WHERE user_id=%s AND lane=%s AND created_at>=%s AND created_at<%s")
+        extra, more = self._skip_sql(skip_categories, skip_key_prefixes)
+        return int(self._one(sql + extra, [user_id, lane, start, end] + more)["pts"])
 
     def category_totals(self, categories, start, end):
         rows = self._all(
