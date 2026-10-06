@@ -240,6 +240,13 @@ class Store:
             params += list(channel_ids)
         return int(self._one(sql, params)["n"])
 
+    def lane_balances(self):
+        """Everyone's all-time balance per lane, straight from the ledger."""
+        rows = self._all(
+            f"SELECT guild_id, user_id, lane, COALESCE(SUM(points),0) AS pts FROM {self.p}xp_ledger "
+            "GROUP BY guild_id, user_id, lane ORDER BY user_id, lane")
+        return [dict(guild_id=r["guild_id"], user_id=r["user_id"], lane=r["lane"], pts=int(r["pts"])) for r in rows]
+
     def legacy_xp_rows(self):
         """The old single-balance XP table (read only, never modified)."""
         return self._all(f"SELECT user_id, guild_id, xp FROM {self.p}member_xp WHERE xp>0 ORDER BY xp DESC, user_id")

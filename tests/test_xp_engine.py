@@ -751,6 +751,85 @@ class TestLegacyImport(Base):
         self.assertEqual((res.awards[0].points, res.bonuses), (10, []))
 
 
+class TestHalveAndCapCorrection(Base):
+    CORR = dict(key="halve-cap-test", factor_num=1, factor_den=2, cap=100, reason="test correction")
+
+    def give(self, user, lane, points):
+        self.s.insert_award(guild_id=1, user_id=user, lane=lane, category="legacy_import", points=points, reason="",
+                            submission_id=None, award_key=f"seed:{user}:{lane}", awarded_by=None,
+                            created_at="2026-10-05 00:00:00")
+
+    def balance(self, user, lane):
+        return self.pts(user, lane)
+
+    def test_balances_are_halved_rounding_up_then_capped_at_100(self):
+        cases = {5: 3, 20: 10, 60: 30, 100: 50, 185: 93, 199: 100, 201: 100, 1500: 100}
+        for n, (start, _end) in enumerate(cases.items()):
+            self.give(100 + n, "builder", start)
+        res = self.e.apply_correction(self.CORR, dt(2026, 10, 6, 14))
+        for n, (start, end) in enumerate(cases.items()):
+            self.assertEqual(self.balance(100 + n, "builder"), end, f"{start} -> {end}")
+        self.assertEqual(res["changed"], len(cases))
+        self.assertEqual(res["removed"], sum(start - end for start, end in cases.items()))
+
+    def test_nobody_ends_above_100_in_either_lane(self):
+        for n, amount in enumerate((5, 185, 370, 860, 1500, 99999)):
+            self.give(200 + n, "builder", amount)
+            self.give(200 + n, "reach", amount)
+        self.e.apply_correction(self.CORR, dt(2026, 10, 6, 14))
+        self.assertTrue(all(b["pts"] <= 100 for b in self.s.lane_balances()))
+
+    def test_both_lanes_are_handled_independently(self):
+        self.give(7, "builder", 185)
+        self.give(7, "reach", 20)
+        self.e.apply_correction(self.CORR, dt(2026, 10, 6, 14))
+        self.assertEqual((self.balance(7, "builder"), self.balance(7, "reach")), (93, 10))
+
+    def test_it_only_ever_lowers_a_balance(self):
+        self.give(8, "builder", 1)       # half of 1 rounds up to 1: nothing to remove
+        self.give(9, "builder", 0)
+        self.give(10, "builder", -5)     # a negative balance is left alone
+        res = self.e.apply_correction(self.CORR, dt(2026, 10, 6, 14))
+        self.assertEqual((self.balance(8, "builder"), self.balance(9, "builder"), self.balance(10, "builder")), (1, 0, -5))
+        self.assertEqual((res["changed"], res["removed"]), (0, 0))
+
+    def test_it_is_written_as_visible_adjustment_rows_and_nothing_is_deleted(self):
+        self.give(11, "reach", 60)
+        self.e.apply_correction(self.CORR, dt(2026, 10, 6, 14))
+        rows = {r["category"]: r for r in self.s.ledger_for_user(11)}
+        self.assertEqual(rows["legacy_import"]["points"], 60)                      # the original row is untouched
+        adj = rows["adjustment"]
+        self.assertEqual((adj["points"], adj["lane"], adj["reason"], adj["award_key"], adj["created_at"]),
+                         (-30, "reach", "test correction", "adjust:halve-cap-test:11:reach", "2026-10-06 14:00:00"))
+
+    def test_running_it_twice_changes_nothing_the_second_time(self):
+        self.give(12, "builder", 185)
+        self.e.apply_correction(self.CORR, dt(2026, 10, 6, 14))
+        again = self.e.apply_correction(self.CORR, dt(2026, 10, 6, 15))
+        self.assertEqual((again["changed"], again["removed"]), (0, 0))
+        self.assertEqual(self.balance(12, "builder"), 93)
+
+    def test_leaderboards_and_the_shortlist_reflect_the_correction(self):
+        for uid, amount in ((13, 860), (14, 40)):
+            self.give(uid, "builder", amount)
+            self.give(uid, "reach", amount)
+        self.e.apply_correction(self.CORR, dt(2026, 10, 6, 14))
+        board = self.e.leaderboard("builder", "cycle", dt(2026, 10, 6, 15))
+        self.assertEqual([(r, u, p) for r, u, p in board], [(1, 13, 100), (2, 14, 20)])
+        review = self.e.cycle_review(dt(2026, 10, 6, 15))
+        self.assertEqual([x["user_id"] for x in review["selected"]], [13])         # exactly at both minimums
+
+    def test_points_earned_after_the_correction_are_kept_in_full(self):
+        self.give(15, "builder", 60)
+        self.e.apply_correction(self.CORR, dt(2026, 10, 6, 14))
+        self.approve(self.post(15, "build", dt(2026, 10, 7)), "build_project")      # +30 afterwards
+        self.assertEqual(self.balance(15, "builder"), 30 + 30)
+
+    def test_the_configured_correction_is_the_one_the_owner_asked_for(self):
+        corr = pc.CORRECTIONS[0]
+        self.assertEqual((corr["factor_num"], corr["factor_den"], corr["cap"]), (1, 2, 100))
+
+
 class TestEngagementClaims(Base):
     def setUp(self):
         super().setUp()
