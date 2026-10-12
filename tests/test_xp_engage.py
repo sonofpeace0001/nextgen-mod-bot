@@ -134,14 +134,27 @@ class TestOfficialPostCards(EngageCase):
         msg = self.reach_message(900, self.mod, f"Good morning! {LINK}?s=20 push it")
         await self.cog.on_message(msg)
         send = self.reach_ch.send.await_args
-        self.assertEqual(send.kwargs["content"], f"<@&55> {LINK}?s=20")      # the link is in the text so Discord shows the preview
+        # the post link sits in the ping line, on the preview host and without tracking parameters
+        self.assertEqual(send.kwargs["content"], "<@&55> https://fxtwitter.com/g_nextgen/status/55")
         self.assertIn("Good morning!", send.kwargs["embed"].description)
         self.assertNotIn("x.com", send.kwargs["embed"].description)
+        fields = {f.name: f.value for f in send.kwargs["embed"].fields}
+        self.assertIn(f"({LINK}?s=20)", fields["Original post"])               # the card still links to x.com
+        self.assertEqual(self.store.latest_official_post()["url"], f"{LINK}?s=20")
         labels = [c.item.label for c in send.kwargs["view"].children]
         self.assertEqual(labels, ["Like (+2)", "Retweet (+3)", "Comment (+5)"])
         msg.delete.assert_awaited_once()                                      # the original message is replaced
         self.assertIsNotNone(self.store.latest_official_post())
         self.assertIsNone(self.store.get_submission(1))                      # not treated as proof
+
+    async def test_an_empty_preview_host_keeps_the_x_link_in_the_ping_line(self):
+        with mock.patch.object(config, "PREVIEW_LINK_HOST", ""):
+            await self.cog.on_message(self.reach_message(906, self.mod, LINK))
+        self.assertEqual(self.reach_ch.send.await_args.kwargs["content"], f"<@&55> {LINK}")
+
+    async def test_xpost_cards_get_the_same_preview_link(self):
+        await self.cog.send_engagement_card(self.reach_ch, "https://twitter.com/G_NEXTGEN/status/77?s=1", "", "mod")
+        self.assertEqual(self.reach_ch.send.await_args.kwargs["content"], "<@&55> https://fxtwitter.com/g_nextgen/status/77")
 
     async def test_a_card_with_no_extra_text_has_a_default_description(self):
         await self.cog.on_message(self.reach_message(901, self.mod, LINK))
