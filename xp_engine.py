@@ -636,13 +636,16 @@ class Engine:
     def claim_engagement(self, guild_id, post_id, user_id, action, handle, proof, now):
         """A member pressed Like, Retweet or Comment on an official post card. Returns
         (status, claim_id): pending (new, goes to a moderator), exists (already claimed),
-        excluded, no_post or invalid."""
+        expired (the claim window has closed), excluded, no_post or invalid."""
         if action not in pc.ENGAGE["actions"]:
             return "invalid", None
         if self.store.is_excluded(user_id):
             return "excluded", None
-        if not self.store.get_official_post(post_id):
+        post = self.store.get_official_post(post_id)
+        if not post:
             return "no_post", None
+        if ts(now) > post["closes_at"]:
+            return "expired", None     # claims close official_window_minutes after the post, nothing is recorded
         cid = self.store.add_claim(guild_id=guild_id, post_id=post_id, user_id=user_id, action=action, handle=handle,
                                    proof=proof or "", created_at=ts(now))
         if cid is None:

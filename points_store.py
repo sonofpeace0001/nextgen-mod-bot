@@ -84,7 +84,8 @@ class Store:
                 message_id BIGINT DEFAULT 0
             )""",
             f"""CREATE TABLE IF NOT EXISTS {p}official_posts (
-                id {pk}, url TEXT, opened_at TEXT, closes_at TEXT
+                id {pk}, url TEXT, opened_at TEXT, closes_at TEXT,
+                card_channel_id BIGINT DEFAULT 0, card_message_id BIGINT DEFAULT 0, card_closed INTEGER DEFAULT 0
             )""",
             f"CREATE TABLE IF NOT EXISTS {p}strikes (user_id BIGINT PRIMARY KEY, count INTEGER DEFAULT 0, last_reason TEXT DEFAULT '')",
             f"CREATE TABLE IF NOT EXISTS {p}excluded_users (user_id BIGINT PRIMARY KEY, reason TEXT DEFAULT '')",
@@ -103,6 +104,10 @@ class Store:
             f"CREATE UNIQUE INDEX IF NOT EXISTS idx_engage_claims_live ON {p}engage_claims (post_id, user_id, action) "
             "WHERE status IN ('pending','approved')",
         ]
+        if self.dialect == "pg":   # tables created before the claim window existed
+            for col in ("card_channel_id BIGINT DEFAULT 0", "card_message_id BIGINT DEFAULT 0",
+                        "card_closed INTEGER DEFAULT 0"):
+                stmts.append(f"ALTER TABLE {p}official_posts ADD COLUMN IF NOT EXISTS {col}")
         for s in stmts:
             self._exec(s)
 
@@ -433,6 +438,19 @@ class Store:
 
     def get_official_post(self, pid):
         return self._one(f"SELECT * FROM {self.p}official_posts WHERE id=%s", (pid,))
+
+    def set_official_card(self, pid, channel_id, message_id):
+        self._exec(f"UPDATE {self.p}official_posts SET card_channel_id=%s, card_message_id=%s WHERE id=%s",
+                   (channel_id, message_id, pid))
+
+    def cards_to_close(self, now_ts):
+        """Posted cards whose claim window has ended and that still show their buttons."""
+        return self._all(
+            f"SELECT * FROM {self.p}official_posts WHERE card_message_id>0 AND card_closed=0 AND closes_at<%s",
+            (now_ts,))
+
+    def mark_card_closed(self, pid):
+        self._exec(f"UPDATE {self.p}official_posts SET card_closed=1 WHERE id=%s", (pid,))
 
     # ---- X handles and engagement claims ---------------------------------
     def get_handle(self, user_id):

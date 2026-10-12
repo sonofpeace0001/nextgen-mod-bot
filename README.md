@@ -70,6 +70,8 @@ A member does it on X first, then presses the button for each thing they did:
 3. A moderator above Elite checks X and approves or declines. On approval the Reach XP is added to the ledger, the leaderboard updates by itself, and the member gets a DM. Declined claims can be claimed again.
 One live claim per member, post and action. These share the 30-points-per-UTC-day cap on official engagement. The buttons are restored automatically after a restart.
 
+**Claims expire.** A claim only counts if it is made within `OFFICIAL_POST_WINDOW_MINUTES` (default 120, so 2 hours) of the post. After that the button replies privately with "This task has expired. You can only claim within 2 hours of the post.", nothing is recorded and nothing is sent to the log channel. The same happens if the window closes while someone is filling in the username form. Every few minutes the bot also edits expired cards: the buttons are replaced by a greyed-out "Claims closed" button and the card says "Task expired". A claim made in time can still be verified by a moderator after the window.
+
 ### Leaderboards: one channel, two commands
 There is one leaderboard channel (`LEADERBOARD_CHANNEL_ID`). In it the bot keeps **two live messages**, Build (Builder XP) and Engagement (Reach XP), each showing the top 10 this cycle and the top 5 all time. They are edited in place a few seconds after points change, again at 00:00 UTC for the new cycle, and re-posted if deleted.
 
@@ -96,6 +98,9 @@ All point values, caps, bonuses and referral/challenge rules live in `points_con
 
 ### Referrals (Reach lane)
 Invite use counts are cached at startup and on invite create/delete; when someone joins, the invite whose count went up is attributed, but only if exactly one did. `/invitedby @member` is the fallback (once, within 7 days of joining, never yourself). First attribution wins, and members already in the server are never attributed. Payouts to the inviter: joined +5, first Academy lesson within 7 days +20, active (14 days old with approved proof on 3 distinct days; checked hourly; expires at 30 days) +25, invitee becomes Elite +50. At most 5 counted referrals per inviter per cycle (by the cycle the invitee joined in); the sixth pays nothing. Accounts younger than `MIN_ACCOUNT_AGE_DAYS` are flagged and stages 2 to 4 are held until staff run `/referralclear`. When two people linked by a referral both get an approved Academy lesson with the same day number in the same UTC week, each gets +10 Builder (once per pair per week).
+
+### Post links in the Build channel
+The review menu under a Build submission has the Build options (share, demo, project) **and** the Reach post options (valuable post +15, original post +25, thread +40, 25 and 100 likes milestones, weekly challenge share). A reviewer who sees an X post link in Build can approve it as Reach XP; the points always go to the lane of the option chosen, and the Reach limits (3 own posts per UTC day, once per link) still apply.
 
 ### Weekly challenge
 `/challenge create` (staff) posts the challenge in `CHALLENGE_CHANNEL_ID` and runs it until the coming Sunday 23:59:59 UTC (if created on a Sunday, until the next one), with the deadline shown as Discord timestamps so everyone sees their own local time. Lateness is judged by when the proof was posted, not when it was approved. Both parts on time (build in the Build channel, share in the Reach channel) add +10 Builder and +10 Reach once; four challenges in a row with both parts add +40 Builder each time the streak reaches a multiple of 4.
