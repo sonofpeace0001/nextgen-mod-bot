@@ -192,7 +192,7 @@ class TestCapsAndUrls(Base):
         self.assertEqual(self.pts(1), 0)
 
     def test_category_must_be_valid_for_the_channel(self):
-        res = self.approve(self.post(1, "build", MON), "post_thread")
+        res = self.approve(self.post(1, "build", MON), "official_engage")
         self.assertEqual((res.ok, res.error), (False, "bad_category"))
         # the failed attempt must not consume the submission
         self.assertTrue(self.approve(self.s.get_submission(1)["id"], "build_share").ok)
@@ -833,6 +833,31 @@ class TestHalveAndCapCorrection(Base):
         self.assertEqual((corr["factor_num"], corr["factor_den"], corr["cap"]), (1, 2, 100))
 
 
+class TestBuildChannelPostOptions(Base):
+    """A post link dropped in Build can be approved as Reach XP, the same options as the Reach menu."""
+
+    def test_the_build_menu_has_the_post_options_next_to_the_build_ones(self):
+        cats, multi = xe.menu_categories("build")
+        self.assertFalse(multi)
+        for c in ("build_share", "build_demo", "build_project", "post_value", "post_original", "post_thread",
+                  "reach_likes_25", "reach_likes_100", "weekly_challenge_share"):
+            self.assertIn(c, cats)
+        self.assertNotIn("official_engage", cats)
+        self.assertLessEqual(len(cats), 25)           # a Discord select menu holds 25 options
+
+    def test_a_post_picked_in_build_pays_reach_xp_not_builder_xp(self):
+        a = self.approve(self.post(7, "build", MON, url="https://x.com/someone/status/77"), "post_thread").awards[0]
+        self.assertEqual((a.points, a.lane), (40, "reach"))
+        self.assertEqual((self.pts(7, "reach"), self.pts(7, "builder")), (40, 0))
+
+    def test_the_reach_post_limits_still_apply_from_build(self):
+        for n in range(1, 4):
+            self.approve(self.post(7, "build", MON, url=f"https://x.com/someone/status/{n}"), "post_value")
+        a = self.approve(self.post(7, "build", MON, url="https://x.com/someone/status/9"), "post_value").awards[0]
+        self.assertEqual(a.points, 0)
+        self.assertIn("daily limit reached", a.notes)
+
+
 class TestPointsCap(Base):
     """A ceiling of 100 cycle XP per member per lane (for now). All-time XP is not capped by itself."""
 
@@ -1010,10 +1035,23 @@ class TestEngagementClaims(Base):
         self.assertEqual(self.e.approve_claim(cid2, REVIEWER, MON).awards[0].points, 0)
 
     def test_a_claim_counts_for_the_day_it_was_made_not_the_day_it_was_approved(self):
-        _, cid = self.claim(7, "comment", when=dt(2026, 10, 18, 23, 59, 59))
+        late_post, _ = self.e.open_official_post("https://x.com/G_NEXTGEN/status/3", dt(2026, 10, 18, 22, 30))
+        _, cid = self.claim(7, "comment", when=dt(2026, 10, 18, 23, 59, 59), post=late_post)
         self.e.approve_claim(cid, REVIEWER, dt(2026, 10, 19, 9))
         self.assertEqual(self.pts(7, "reach", *self.e.cycle_range(0)), 5)
         self.assertEqual(self.pts(7, "reach", *self.e.cycle_range(1)), 0)
+
+    def test_claims_close_two_hours_after_the_post(self):
+        just_in = MON + datetime.timedelta(minutes=120)
+        self.assertEqual(self.claim(7, "like", when=just_in)[0], "pending")
+        too_late = MON + datetime.timedelta(minutes=120, seconds=1)
+        self.assertEqual(self.claim(8, "like", when=too_late), ("expired", None))
+        self.assertIsNone(self.s.live_claim(self.post_id, 8, "like"))      # nothing was recorded
+
+    def test_the_claim_window_follows_the_setting(self):
+        self.e.rules.official_window_minutes = 30
+        short, _ = self.e.open_official_post("https://x.com/G_NEXTGEN/status/4", MON)
+        self.assertEqual(self.claim(7, "like", when=MON + datetime.timedelta(minutes=31), post=short)[0], "expired")
 
     def test_excluded_members_cannot_claim_and_nothing_is_paid_if_excluded_later(self):
         self.s.exclude(7, "test")
@@ -1074,7 +1112,9 @@ class TestConfigData(unittest.TestCase):
     def test_every_category_sits_in_the_right_lane(self):
         for key, v in pc.CATEGORIES.items():
             for ch in v["channels"]:
-                self.assertEqual(pc.CHANNEL_LANES[ch], v["lane"], key)
+                if pc.CHANNEL_LANES[ch] != v["lane"]:
+                    # the one allowed crossover: Reach post awards can be picked in the Build menu
+                    self.assertEqual((ch, v["lane"]), ("build", "reach"), key)
         self.assertEqual(pc.CHANNEL_LANES["reach"], "reach")
         self.assertTrue(all(pc.CHANNEL_LANES[k] == "builder" for k in ("academy", "build", "tutorial", "prompt_result")))
 

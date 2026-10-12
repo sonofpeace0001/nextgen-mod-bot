@@ -210,6 +210,16 @@ def normalise_url(url):
     return host + ("/" + path if path else "")
 
 
+def preview_url(link, host):
+    """The link to put in an official post's ping line so Discord shows the post as a card: the same
+    user and post id on `host`, without tracking parameters. Not an X post link, or no host, returns
+    the link unchanged."""
+    key = normalise_url(link)
+    if not host or not key.startswith("x.com/") or "/status/" not in key:
+        return link
+    return f"https://{host}/{key[len('x.com/'):]}"
+
+
 def primary_proof_url(channel_key, text):
     """The link a submission is keyed on: the X status link in Reach, else the first link."""
     links = find_links(text)
@@ -636,13 +646,16 @@ class Engine:
     def claim_engagement(self, guild_id, post_id, user_id, action, handle, proof, now):
         """A member pressed Like, Retweet or Comment on an official post card. Returns
         (status, claim_id): pending (new, goes to a moderator), exists (already claimed),
-        excluded, no_post or invalid."""
+        expired (the claim window has closed), excluded, no_post or invalid."""
         if action not in pc.ENGAGE["actions"]:
             return "invalid", None
         if self.store.is_excluded(user_id):
             return "excluded", None
-        if not self.store.get_official_post(post_id):
+        post = self.store.get_official_post(post_id)
+        if not post:
             return "no_post", None
+        if ts(now) > post["closes_at"]:
+            return "expired", None     # claims close official_window_minutes after the post, nothing is recorded
         cid = self.store.add_claim(guild_id=guild_id, post_id=post_id, user_id=user_id, action=action, handle=handle,
                                    proof=proof or "", created_at=ts(now))
         if cid is None:

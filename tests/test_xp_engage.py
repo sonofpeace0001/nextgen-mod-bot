@@ -1,4 +1,4 @@
-"""Tests for official post cards (Like / Retweet / Comment claims), in-channel review buttons for
+﻿"""Tests for official post cards (Like / Retweet / Comment claims), in-channel review buttons for
 roles above Elite, and the two live leaderboards, using fake Discord objects.
 
 Run from the repo root:  python -m unittest discover -s tests -t .
@@ -134,14 +134,27 @@ class TestOfficialPostCards(EngageCase):
         msg = self.reach_message(900, self.mod, f"Good morning! {LINK}?s=20 push it")
         await self.cog.on_message(msg)
         send = self.reach_ch.send.await_args
-        self.assertEqual(send.kwargs["content"], f"<@&55> {LINK}?s=20")      # the link is in the text so Discord shows the preview
+        # the post link sits in the ping line, on the preview host and without tracking parameters
+        self.assertEqual(send.kwargs["content"], "<@&55> https://fxtwitter.com/g_nextgen/status/55")
         self.assertIn("Good morning!", send.kwargs["embed"].description)
         self.assertNotIn("x.com", send.kwargs["embed"].description)
+        fields = {f.name: f.value for f in send.kwargs["embed"].fields}
+        self.assertIn(f"({LINK}?s=20)", fields["Original post"])               # the card still links to x.com
+        self.assertEqual(self.store.latest_official_post()["url"], f"{LINK}?s=20")
         labels = [c.item.label for c in send.kwargs["view"].children]
         self.assertEqual(labels, ["Like (+2)", "Retweet (+3)", "Comment (+5)"])
         msg.delete.assert_awaited_once()                                      # the original message is replaced
         self.assertIsNotNone(self.store.latest_official_post())
         self.assertIsNone(self.store.get_submission(1))                      # not treated as proof
+
+    async def test_an_empty_preview_host_keeps_the_x_link_in_the_ping_line(self):
+        with mock.patch.object(config, "PREVIEW_LINK_HOST", ""):
+            await self.cog.on_message(self.reach_message(906, self.mod, LINK))
+        self.assertEqual(self.reach_ch.send.await_args.kwargs["content"], f"<@&55> {LINK}")
+
+    async def test_xpost_cards_get_the_same_preview_link(self):
+        await self.cog.send_engagement_card(self.reach_ch, "https://twitter.com/G_NEXTGEN/status/77?s=1", "", "mod")
+        self.assertEqual(self.reach_ch.send.await_args.kwargs["content"], "<@&55> https://fxtwitter.com/g_nextgen/status/77")
 
     async def test_a_card_with_no_extra_text_has_a_default_description(self):
         await self.cog.on_message(self.reach_message(901, self.mod, LINK))
@@ -180,10 +193,18 @@ class TestOfficialPostCards(EngageCase):
         self.reach_ch.send.assert_not_awaited()
 
 
+def clock(testcase, when):
+    """Make the cog think it is `when` (UTC)."""
+    p = mock.patch.object(xp_cog, "now_utc", lambda: when)
+    p.start()
+    testcase.addCleanup(p.stop)
+
+
 class ClaimBase(EngageCase):
     async def asyncSetUp(self):
         await super().asyncSetUp()
         self.post_id, _ = self.engine.open_official_post(LINK, NOW)
+        clock(self, NOW + datetime.timedelta(minutes=10))     # well inside the two hour claim window
 
     async def link_handle(self, user, text="@someone", proof=""):
         modal = xp_cog.HandleModal(self.cog, self.post_id, "like")
@@ -279,6 +300,88 @@ class TestClaimingPoints(ClaimBase):
         retry = self.inter(self.plain)
         await self.cog.on_engage(retry, self.post_id, "like")
         self.assertEqual(self.store.live_claim(self.post_id, 7, "like")["status"], "pending")
+
+
+class TestClaimWindow(ClaimBase):
+    """Claims close two hours after the post: no claim is recorded and nothing reaches the mods."""
+
+    def late(self, minutes=121):
+        clock(self, NOW + datetime.timedelta(minutes=minutes))
+
+    async def test_a_late_click_says_the_task_expired_and_goes_nowhere(self):
+        self.late()
+        i = self.inter(self.plain)
+        card = SimpleNamespace(embeds=[discord.Embed(title="New post from NEXTGEN")], edit=AsyncMock())
+        i.message = card
+        await self.cog.on_engage(i, self.post_id, "like")
+        text = i.response.send_message.await_args.args[0]
+        self.assertEqual(text, "This task has expired. You can only claim within 2 hours of the post.")
+        self.assertTrue(i.response.send_message.await_args.kwargs["ephemeral"])
+        i.response.send_modal.assert_not_awaited()
+        self.assertIsNone(self.store.live_claim(self.post_id, 7, "like"))
+        self.staff.send.assert_not_awaited()                        # nothing goes to the log channel
+
+    async def test_the_card_is_closed_when_someone_clicks_after_the_window(self):
+        self.late()
+        i = self.inter(self.plain)
+        card = SimpleNamespace(embeds=[discord.Embed(title="New post from NEXTGEN")], edit=AsyncMock())
+        i.message = card
+        await self.cog.on_engage(i, self.post_id, "like")
+        kw = card.edit.await_args.kwargs
+        self.assertEqual([c.label for c in kw["view"].children], ["Claims closed"])
+        self.assertTrue(kw["view"].children[0].disabled)
+        self.assertEqual(kw["embed"].fields[0].name, "Task expired")
+
+    async def test_a_click_just_inside_the_window_still_works(self):
+        self.late(119)
+        i = self.inter(self.plain)
+        await self.cog.on_engage(i, self.post_id, "like")
+        i.response.send_modal.assert_awaited_once()
+
+    async def test_the_window_closing_while_the_form_is_open_sends_nothing_to_the_mods(self):
+        i = self.inter(self.plain)
+        modal = xp_cog.HandleModal(self.cog, self.post_id, "like")
+        modal.handle._value = "someone"
+        self.late()                                                 # they took too long typing
+        await modal.on_submit(i)
+        self.assertIn("This task has expired", i.followup.send.await_args.args[0])
+        self.assertIsNone(self.store.live_claim(self.post_id, 7, "like"))
+        self.staff.send.assert_not_awaited()
+
+    async def test_a_claim_made_in_time_can_still_be_verified_after_the_window(self):
+        await self.link_handle(self.plain)                          # claimed 10 minutes in
+        claim = self.store.live_claim(self.post_id, 7, "like")
+        self.late(600)
+        res = self.engine.approve_claim(claim["id"], 50, xp_cog.now_utc())
+        self.assertTrue(res.ok)
+
+    async def test_the_expiry_sweep_closes_old_cards_once(self):
+        ch = self.reach_ch
+        pid, msg = await self.cog.send_engagement_card(ch, LINK, "", "mod")
+        self.assertEqual(self.store.get_official_post(pid)["card_message_id"], msg.id)
+        self.late(135)                                              # the card went up 10 minutes in
+        await self.cog._expire_cards()
+        msg.edit.assert_awaited_once()
+        self.assertEqual(self.store.get_official_post(pid)["card_closed"], 1)
+        await self.cog._expire_cards()
+        msg.edit.assert_awaited_once()                              # not edited again
+
+    async def test_cards_still_inside_the_window_are_left_alone(self):
+        _pid, msg = await self.cog.send_engagement_card(self.reach_ch, LINK, "", "mod")
+        await self.cog._expire_cards()
+        msg.edit.assert_not_awaited()
+
+    async def test_a_deleted_card_is_just_marked_closed(self):
+        pid, msg = await self.cog.send_engagement_card(self.reach_ch, LINK, "", "mod")
+        del self.reach_ch.messages[msg.id]
+        self.late(135)
+        await self.cog._expire_cards()
+        self.assertEqual(self.store.get_official_post(pid)["card_closed"], 1)
+
+    async def test_the_card_tells_members_about_the_window(self):
+        e = self.cog.engagement_embed("", "mod")
+        how = next(f.value for f in e.fields if f.name == "How it works")
+        self.assertIn("Claims close 2 hours after the post", how)
 
 
 class TestClaimVerification(ClaimBase):
@@ -377,6 +480,7 @@ class TestButtonsSurviveRestarts(EngageCase):
                               xp_cog.ClaimButton.__discord_ui_compiled_template__.fullmatch(bad))
 
     async def test_a_button_press_reaches_the_cog(self):
+        clock(self, NOW + datetime.timedelta(minutes=10))
         post_id, _ = self.engine.open_official_post(LINK, NOW)
         btn = xp_cog.EngageButton(post_id, "like")
         i = self.inter(self.plain)

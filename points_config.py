@@ -34,16 +34,18 @@ CHANNEL_LANES = {
 CATEGORIES = {
     # ---- Reach lane ----
     "official_engage":  dict(lane=REACH, points=10, channels=["reach"], label="official post engagement"),
-    "post_value":       dict(lane=REACH, points=15, channels=["reach"], label="valuable post about NEXTGEN"),
-    "post_original":    dict(lane=REACH, points=25, channels=["reach"], label="original post about NEXTGEN"),
-    "post_thread":      dict(lane=REACH, points=40, channels=["reach"], label="thread about NEXTGEN"),
-    "reach_likes_25":   dict(lane=REACH, points=15, channels=["reach"], label="25 likes milestone"),
-    "reach_likes_100":  dict(lane=REACH, points=40, channels=["reach"], label="100 likes milestone"),
+    # The post awards also show in the Build review menu, so a post link dropped in Build can be
+    # approved as Reach XP. The award always goes to the category's own lane.
+    "post_value":       dict(lane=REACH, points=15, channels=["reach", "build"], label="valuable post about NEXTGEN"),
+    "post_original":    dict(lane=REACH, points=25, channels=["reach", "build"], label="original post about NEXTGEN"),
+    "post_thread":      dict(lane=REACH, points=40, channels=["reach", "build"], label="thread about NEXTGEN"),
+    "reach_likes_25":   dict(lane=REACH, points=15, channels=["reach", "build"], label="25 likes milestone"),
+    "reach_likes_100":  dict(lane=REACH, points=40, channels=["reach", "build"], label="100 likes milestone"),
     "referral_join":    dict(lane=REACH, points=5,  channels=[], label="referral joined", system=True),
     "referral_lesson":  dict(lane=REACH, points=20, channels=[], label="referral first lesson", system=True),
     "referral_active":  dict(lane=REACH, points=25, channels=[], label="referral active", system=True),
     "referral_elite":   dict(lane=REACH, points=50, channels=[], label="referral became Elite", system=True),
-    "weekly_challenge_share": dict(lane=REACH, points=25, channels=["reach"], label="weekly challenge share"),
+    "weekly_challenge_share": dict(lane=REACH, points=25, channels=["reach", "build"], label="weekly challenge share"),
     # Official post buttons (Like / Repost / Comment on a card the bot posts). Claimed with a
     # button, verified by a moderator, never picked from a reviewer menu. A fully engaged post
     # is worth 10, the same as the old single "official engagement" award.
