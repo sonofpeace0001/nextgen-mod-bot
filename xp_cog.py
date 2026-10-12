@@ -732,7 +732,7 @@ class XPCog(commands.Cog):
                 log.warning("could not remove review card: %s", e)
 
     # ---- official posts: engagement cards --------------------------------
-    def engagement_embed(self, note, poster_name, link=None):
+    def engagement_embed(self, note, poster_name):
         points = ", ".join(f"{pc.ENGAGE['button_labels'][a]} +{pc.CATEGORIES[c]['points']}"
                            for a, c in pc.ENGAGE["actions"].items())
         e = discord.Embed(
@@ -740,8 +740,6 @@ class XPCog(commands.Cog):
             description=note or "Engage with the post on X, then press the buttons below to claim your points.",
             color=discord.Color.blurple())
         e.add_field(name="Reach XP", value=points + ".", inline=False)
-        if link:
-            e.add_field(name="Original post", value=f"[Open on X]({link})", inline=False)
         e.add_field(
             name="How it works",
             value="Do it on X first, then press the button for each thing you did. A moderator checks every claim "
@@ -792,14 +790,12 @@ class XPCog(commands.Cog):
         await self.bot.wait_until_ready()
 
     async def send_engagement_card(self, channel, link, note, poster_name):
-        """Post the card with the post link in the ping line, so Discord shows the post as a preview
-        card (the link is on PREVIEW_LINK_HOST, since x.com links do not preview), plus the Like,
-        Retweet and Comment buttons. The card itself keeps a link to the original x.com post."""
+        """Post the card with the X link in the ping line, so Discord shows the post's own
+        preview card, plus the Like, Retweet and Comment buttons."""
         pid, _closes = self.engine.open_official_post(link, now_utc())
         ping = f"<@&{config.XP_PING_ROLE_ID}>" if config.XP_PING_ROLE_ID else ""
-        shown = xe.preview_url(link, config.PREVIEW_LINK_HOST)
         msg = await channel.send(
-            content=f"{ping} {shown}".strip(), embed=self.engagement_embed(note, poster_name, link), view=engage_view(pid),
+            content=f"{ping} {link}".strip(), embed=self.engagement_embed(note, poster_name), view=engage_view(pid),
             allowed_mentions=discord.AllowedMentions(roles=True, everyone=False, users=False))
         self.store.set_official_card(pid, channel.id, msg.id)
         return pid, msg

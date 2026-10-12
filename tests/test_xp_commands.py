@@ -158,7 +158,7 @@ class TestStaffCommands(CommandCase):
         with mock.patch.object(xp_cog, "now_utc", return_value=NOW):
             await cmd(xp_cog.XPCog.xpost)(self.cog, i, "https://x.com/G_NEXTGEN/status/5", "Push this one")
         send = self.channels[REACH].send.await_args
-        self.assertEqual(send.kwargs["content"], "<@&55> https://fxtwitter.com/g_nextgen/status/5")  # link in the ping line, on the preview host
+        self.assertEqual(send.kwargs["content"], "<@&55> https://x.com/G_NEXTGEN/status/5")  # link in the text: Discord shows the post preview
         embed = send.kwargs["embed"]
         self.assertEqual(embed.description, "Push this one")
         self.assertIn("Like +2, Retweet +3, Comment +5", embed.fields[0].value)

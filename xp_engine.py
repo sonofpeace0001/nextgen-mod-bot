@@ -210,16 +210,6 @@ def normalise_url(url):
     return host + ("/" + path if path else "")
 
 
-def preview_url(link, host):
-    """The link to put in an official post's ping line so Discord shows the post as a card: the same
-    user and post id on `host`, without tracking parameters. Not an X post link, or no host, returns
-    the link unchanged."""
-    key = normalise_url(link)
-    if not host or not key.startswith("x.com/") or "/status/" not in key:
-        return link
-    return f"https://{host}/{key[len('x.com/'):]}"
-
-
 def primary_proof_url(channel_key, text):
     """The link a submission is keyed on: the X status link in Reach, else the first link."""
     links = find_links(text)

@@ -123,10 +123,6 @@ TUTORIAL_CHANNEL_ID      = _int("TUTORIAL_CHANNEL_ID", 1520157303054139492)
 PROMPT_RESULT_CHANNEL_ID = _int("PROMPT_RESULT_CHANNEL_ID", 1492637326541590790)
 CHALLENGE_CHANNEL_ID     = _int("CHALLENGE_CHANNEL_ID", 0)
 
-# X posts do not show a preview in Discord on their own. The link in the ping line of an official post
-# card is rewritten to this host (same path) so the post shows up as a card; "" keeps the x.com link.
-PREVIEW_LINK_HOST        = os.getenv("PREVIEW_LINK_HOST", "fxtwitter.com").strip()
-
 # Reviews (Reach proof cards, engagement claims, spam alerts) go to the LOG channel unless
 # STAFF_REVIEW_CHANNEL_ID says otherwise.
 STAFF_REVIEW_CHANNEL_ID  = _int("STAFF_REVIEW_CHANNEL_ID", 0) or LOG_CHANNEL_ID
