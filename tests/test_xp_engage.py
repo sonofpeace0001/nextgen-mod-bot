@@ -682,6 +682,43 @@ class TestLiveLeaderboards(EngageCase):
         self.assertEqual(self.board_ch.send.await_count, 3)
         self.assertNotEqual(int(self.kv[f"{pc.BOARD['kv_prefix']}:reach"]), first_id)
 
+    async def test_the_morning_drop_posts_fresh_boards_and_removes_the_old_ones(self):
+        await self.cog.update_boards()
+        old = {lane: int(self.kv[f"{pc.BOARD['kv_prefix']}:{lane}"]) for lane in ("builder", "reach")}
+        old_msgs = {lane: self.board_ch.messages[mid] for lane, mid in old.items()}
+        await self.cog.update_boards(new_post=True)
+        self.assertEqual(self.board_ch.send.await_count, 4)                  # two fresh posts, Build first
+        build, reach = self.posted()[2:]
+        self.assertEqual((build.title, reach.title), ("Build leaderboard", "Engagement leaderboard"))
+        for lane, msg in old_msgs.items():
+            msg.delete.assert_awaited_once()                                  # the previous post is removed
+            msg.edit.assert_not_awaited()
+            self.assertNotEqual(int(self.kv[f"{pc.BOARD['kv_prefix']}:{lane}"]), old[lane])
+
+    async def test_after_a_drop_the_live_updates_edit_the_new_posts(self):
+        await self.cog.update_boards()
+        await self.cog.update_boards(new_post=True)
+        new_id = int(self.kv[f"{pc.BOARD['kv_prefix']}:builder"])
+        self.give(8, "builder", 99, "g")
+        await self.cog.update_boards()
+        self.assertEqual(self.board_ch.send.await_count, 4)                  # no extra post
+        self.assertIn("user8", self.board_ch.messages[new_id].edit.await_args.kwargs["embed"].description)
+
+    async def test_the_first_drop_with_nothing_to_remove_just_posts(self):
+        await self.cog.update_boards(new_post=True)
+        self.assertEqual(self.board_ch.send.await_count, 2)
+
+    async def test_a_failed_delete_of_the_old_post_does_not_stop_the_drop(self):
+        await self.cog.update_boards()
+        for mid in list(self.board_ch.messages):
+            self.board_ch.messages[mid].delete.side_effect = forbidden()
+        await self.cog.update_boards(new_post=True)
+        self.assertEqual(self.board_ch.send.await_count, 4)
+
+    async def test_the_drop_runs_at_eight_utc_by_default(self):
+        self.assertEqual(config.XP_LEADERBOARD_DROP_HOUR, 8)
+        self.assertEqual(self.cog._morning_drop.time[0], datetime.time(8, 0, tzinfo=datetime.timezone.utc))
+
     async def test_an_unset_or_silent_channel_is_skipped(self):
         with mock.patch.object(config, "LEADERBOARD_CHANNEL_ID", 0):
             await self.cog.update_boards()
