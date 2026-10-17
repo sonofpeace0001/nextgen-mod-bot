@@ -185,6 +185,9 @@ XP_PING_ROLE_ID = int(os.getenv("XP_PING_ROLE_ID", "0")) or MEMBER_ROLE_ID
 # new cycle at midnight (and they update within seconds of any approval).
 XP_LEADERBOARD_ENABLED = os.getenv("XP_LEADERBOARD_ENABLED", "true").lower() == "true"
 XP_LEADERBOARD_HOUR = min(23, max(0, _int("XP_LEADERBOARD_HOUR", 0)))
+# Every morning at this hour (UTC) the Build and Reach boards are posted again as fresh messages and
+# the previous ones are removed. Set XP_LEADERBOARD_ENABLED=false to turn off all board posting.
+XP_LEADERBOARD_DROP_HOUR = min(23, max(0, _int("XP_LEADERBOARD_DROP_HOUR", 8)))
 
 # Ticket channel detection
 TICKET_KEYWORDS        = os.getenv("TICKET_KEYWORDS", "ticket,support,help-desk").split(",")

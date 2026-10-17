@@ -193,6 +193,7 @@ Then point `SUPABASE_DB_*` (below) at that project and role. `database.py`'s `in
 | XP_PING_ROLE_ID | No | 0 (falls back to MEMBER_ROLE_ID) |
 | XP_LEADERBOARD_ENABLED | No | true |
 | XP_LEADERBOARD_HOUR | No | 0 (UTC; when the live boards are refreshed for the new cycle) |
+| XP_LEADERBOARD_DROP_HOUR | No | 8 (UTC; every day at this hour the Build and Reach boards are posted again as fresh messages and the previous ones are deleted) |
 | REACH_CHANNEL_ID | No | 0 (owner sets; Reach proof channel) |
 | BUILD_CHANNEL_ID | No | 1529120140711432344 |
 | TUTORIAL_CHANNEL_ID | No | 1520157303054139492 |

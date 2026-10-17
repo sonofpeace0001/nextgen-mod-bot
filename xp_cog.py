@@ -421,6 +421,9 @@ class XPCog(commands.Cog):
         if config.XP_LEADERBOARD_ENABLED and config.LEADERBOARD_CHANNEL_ID and not self._daily_board.is_running():
             self._daily_board.start()
             log.info("Daily leaderboard refresh started (%02d:00 UTC).", config.XP_LEADERBOARD_HOUR)
+        if config.XP_LEADERBOARD_ENABLED and config.LEADERBOARD_CHANNEL_ID and not self._morning_drop.is_running():
+            self._morning_drop.start()
+            log.info("Morning leaderboard drop started (%02d:00 UTC).", config.XP_LEADERBOARD_DROP_HOUR)
         await self.update_boards()
 
     LEGACY_FLAG = "points_legacy_import_done"
@@ -476,6 +479,7 @@ class XPCog(commands.Cog):
         self._hourly.cancel()
         self._expire_cards.cancel()
         self._daily_board.cancel()
+        self._morning_drop.cancel()
 
     # ---- small helpers ---------------------------------------------------
     async def staff_alert(self, text):
@@ -994,10 +998,12 @@ class XPCog(commands.Cog):
             log.exception("Elite role sync failed")
         await self.update_boards()
 
-    async def update_boards(self):
+    async def update_boards(self, new_post=False):
         """Keep the two live leaderboards (Build, then Reach) up to date in the one leaderboard
         channel: each is a single message, edited in place, or posted again if it was deleted.
-        Does nothing when LEADERBOARD_CHANNEL_ID is not set."""
+        With new_post=True (the morning drop) each board is posted as a fresh message instead and the
+        previous one is deleted, so the channel always holds the latest pair. Does nothing when
+        LEADERBOARD_CHANNEL_ID is not set."""
         cid = config.LEADERBOARD_CHANNEL_ID
         if not cid:
             return
@@ -1010,7 +1016,7 @@ class XPCog(commands.Cog):
                 embed = self.board_embed(ch.guild, lane)
                 key = f"{pc.BOARD['kv_prefix']}:{lane}"
                 mid = db.kv_get(key)
-                if mid:
+                if mid and not new_post:
                     try:
                         msg = await ch.fetch_message(int(mid))
                         await msg.edit(embed=embed)
@@ -1019,6 +1025,11 @@ class XPCog(commands.Cog):
                         pass
                 msg = await ch.send(embed=embed)
                 db.kv_set(key, msg.id)
+                if mid and new_post:
+                    try:
+                        await ch.get_partial_message(int(mid)).delete()   # the old post goes once the new one is up
+                    except Exception as e:
+                        log.warning("Could not remove the previous %s leaderboard post: %s", lane, e)
             except Exception:
                 log.exception("Could not update the %s leaderboard", lane)
 
@@ -1218,6 +1229,14 @@ class XPCog(commands.Cog):
 
     @_daily_board.before_loop
     async def _daily_ready(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(time=datetime.time(hour=config.XP_LEADERBOARD_DROP_HOUR, minute=0, tzinfo=UTC))
+    async def _morning_drop(self):
+        await self.update_boards(new_post=True)   # fresh Build and Reach boards every morning
+
+    @_morning_drop.before_loop
+    async def _morning_drop_ready(self):
         await self.bot.wait_until_ready()
 
     def _who(self, guild, uid):
