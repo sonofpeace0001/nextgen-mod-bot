@@ -330,22 +330,20 @@ class TestClaimWindow(ClaimBase):
         i.message = card
         await self.cog.on_engage(i, self.post_id, "like")
         text = i.response.send_message.await_args.args[0]
-        self.assertEqual(text, "This task has expired. You can only claim within 2 hours of the post.")
+        self.assertEqual(text, "Claiming has expired. Claims close 2 hours after the post is made. "
+                               "You can still do the task on X, but no points can be claimed now.")
         self.assertTrue(i.response.send_message.await_args.kwargs["ephemeral"])
         i.response.send_modal.assert_not_awaited()
         self.assertIsNone(self.store.live_claim(self.post_id, 7, "like"))
         self.staff.send.assert_not_awaited()                        # nothing goes to the log channel
 
-    async def test_the_card_is_closed_when_someone_clicks_after_the_window(self):
+    async def test_the_card_and_its_buttons_are_left_alone_after_the_window(self):
         self.late()
         i = self.inter(self.plain)
         card = SimpleNamespace(embeds=[discord.Embed(title="New post from NEXTGEN")], edit=AsyncMock())
         i.message = card
         await self.cog.on_engage(i, self.post_id, "like")
-        kw = card.edit.await_args.kwargs
-        self.assertEqual([c.label for c in kw["view"].children], ["Claims closed"])
-        self.assertTrue(kw["view"].children[0].disabled)
-        self.assertEqual(kw["embed"].fields[0].name, "Task expired")
+        card.edit.assert_not_awaited()                              # members can still read it and do the task on X
 
     async def test_a_click_just_inside_the_window_still_works(self):
         self.late(119)
@@ -359,7 +357,7 @@ class TestClaimWindow(ClaimBase):
         modal.handle._value = "someone"
         self.late()                                                 # they took too long typing
         await modal.on_submit(i)
-        self.assertIn("This task has expired", i.followup.send.await_args.args[0])
+        self.assertIn("Claiming has expired", i.followup.send.await_args.args[0])
         self.assertIsNone(self.store.live_claim(self.post_id, 7, "like"))
         self.staff.send.assert_not_awaited()
 
@@ -370,29 +368,6 @@ class TestClaimWindow(ClaimBase):
         res = self.engine.reverse_claim(claim["id"], 50, xp_cog.now_utc())
         self.assertTrue(res.ok)
         self.assertEqual(self.pts_total(7), 0)
-
-    async def test_the_expiry_sweep_closes_old_cards_once(self):
-        ch = self.reach_ch
-        pid, msg = await self.cog.send_engagement_card(ch, LINK, "", "mod")
-        self.assertEqual(self.store.get_official_post(pid)["card_message_id"], msg.id)
-        self.late(135)                                              # the card went up 10 minutes in
-        await self.cog._expire_cards()
-        msg.edit.assert_awaited_once()
-        self.assertEqual(self.store.get_official_post(pid)["card_closed"], 1)
-        await self.cog._expire_cards()
-        msg.edit.assert_awaited_once()                              # not edited again
-
-    async def test_cards_still_inside_the_window_are_left_alone(self):
-        _pid, msg = await self.cog.send_engagement_card(self.reach_ch, LINK, "", "mod")
-        await self.cog._expire_cards()
-        msg.edit.assert_not_awaited()
-
-    async def test_a_deleted_card_is_just_marked_closed(self):
-        pid, msg = await self.cog.send_engagement_card(self.reach_ch, LINK, "", "mod")
-        del self.reach_ch.messages[msg.id]
-        self.late(135)
-        await self.cog._expire_cards()
-        self.assertEqual(self.store.get_official_post(pid)["card_closed"], 1)
 
     async def test_the_card_tells_members_about_the_window(self):
         e = self.cog.engagement_embed("", "mod")

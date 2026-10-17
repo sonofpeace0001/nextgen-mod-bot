@@ -416,8 +416,6 @@ class XPCog(commands.Cog):
         await self._run_corrections()
         if not self._hourly.is_running():
             self._hourly.start()
-        if not self._expire_cards.is_running():
-            self._expire_cards.start()
         if config.XP_LEADERBOARD_ENABLED and config.LEADERBOARD_CHANNEL_ID and not self._daily_board.is_running():
             self._daily_board.start()
             log.info("Daily leaderboard refresh started (%02d:00 UTC).", config.XP_LEADERBOARD_HOUR)
@@ -474,7 +472,6 @@ class XPCog(commands.Cog):
 
     async def cog_unload(self):
         self._hourly.cancel()
-        self._expire_cards.cancel()
         self._daily_board.cancel()
 
     # ---- small helpers ---------------------------------------------------
@@ -756,39 +753,8 @@ class XPCog(commands.Cog):
         return f"{mins // 60} hour" + ("" if mins == 60 else "s")
 
     def expired_text(self):
-        return f"This task has expired. You can only claim within {self.window_text()} of the post."
-
-    async def _close_card(self, post, message=None):
-        """Show a post card as expired: the buttons are replaced by one greyed-out button and the
-        card says claims are closed. Best effort; the claim check itself never depends on it."""
-        try:
-            if message is None:
-                ch = self.bot.get_channel(post["card_channel_id"]) if post["card_channel_id"] else None
-                if ch is None or not post["card_message_id"]:
-                    return
-                message = await ch.fetch_message(post["card_message_id"])
-            e = message.embeds[0].copy() if message.embeds else discord.Embed(title="New post from NEXTGEN")
-            e.color = discord.Color.light_grey()
-            e.clear_fields()
-            e.add_field(name="Task expired", value=self.expired_text(), inline=False)
-            view = discord.ui.View(timeout=None)
-            view.add_item(discord.ui.Button(label="Claims closed", style=discord.ButtonStyle.secondary,
-                                            disabled=True, custom_id=f"xpe:{post['id']}:closed"))
-            await message.edit(embed=e, view=view)
-            self.store.mark_card_closed(post["id"])
-        except discord.NotFound:
-            self.store.mark_card_closed(post["id"])    # the card was deleted, nothing left to close
-        except Exception:
-            log.exception("Could not close the card for official post %s", post["id"])
-
-    @tasks.loop(minutes=5)
-    async def _expire_cards(self):
-        for post in self.store.cards_to_close(xe.ts(now_utc())):
-            await self._close_card(post)
-
-    @_expire_cards.before_loop
-    async def _expire_cards_ready(self):
-        await self.bot.wait_until_ready()
+        return (f"Claiming has expired. Claims close {self.window_text()} after the post is made. "
+                "You can still do the task on X, but no points can be claimed now.")
 
     async def send_engagement_card(self, channel, link, note, poster_name):
         """Post the card with the X link in the ping line, so Discord shows the post's own
@@ -798,7 +764,6 @@ class XPCog(commands.Cog):
         msg = await channel.send(
             content=f"{ping} {link}".strip(), embed=self.engagement_embed(note, poster_name), view=engage_view(pid),
             allowed_mentions=discord.AllowedMentions(roles=True, everyone=False, users=False))
-        self.store.set_official_card(pid, channel.id, msg.id)
         return pid, msg
 
     async def _convert_official(self, message, link):
@@ -826,8 +791,7 @@ class XPCog(commands.Cog):
             await interaction.response.send_message("This post is not open for claims any more.", ephemeral=True)
             return
         if xe.ts(now_utc()) > post["closes_at"]:
-            await interaction.response.send_message(self.expired_text(), ephemeral=True)
-            await self._close_card(post, interaction.message)
+            await interaction.response.send_message(self.expired_text(), ephemeral=True)   # the card is left as it is
             return
         live = self.store.live_claim(post_id, uid, action)
         if live:
