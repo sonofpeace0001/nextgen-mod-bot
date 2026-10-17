@@ -139,6 +139,9 @@ CHALLENGE = dict(
 ENGAGE = dict(
     actions={"like": "official_like", "retweet": "official_retweet", "comment": "official_comment"},
     button_labels={"like": "Like", "retweet": "Retweet", "comment": "Comment"},
+    # A claim is paid the moment the button is pressed. A moderator can decline it for this many
+    # hours; declining takes the points back. After that the claim is final.
+    decline_window_hours=24,
 )
 
 # One-time import of the old single XP balance (member_xp) into the ledger. Each balance is split

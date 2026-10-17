@@ -635,8 +635,9 @@ class Engine:
     # ---- official post engagement claims --------------------------------
     def claim_engagement(self, guild_id, post_id, user_id, action, handle, proof, now):
         """A member pressed Like, Retweet or Comment on an official post card. Returns
-        (status, claim_id): pending (new, goes to a moderator), exists (already claimed),
-        expired (the claim window has closed), excluded, no_post or invalid."""
+        (status, claim_id): pending (new; the caller pays it straight away with approve_claim),
+        exists (already claimed), declined (a moderator declined it), expired (the claim window has
+        closed), excluded, no_post or invalid."""
         if action not in pc.ENGAGE["actions"]:
             return "invalid", None
         if self.store.is_excluded(user_id):
@@ -646,6 +647,8 @@ class Engine:
             return "no_post", None
         if ts(now) > post["closes_at"]:
             return "expired", None     # claims close official_window_minutes after the post, nothing is recorded
+        if self.store.declined_claim(post_id, user_id, action):
+            return "declined", None    # a moderator turned this one down: it cannot be claimed again
         cid = self.store.add_claim(guild_id=guild_id, post_id=post_id, user_id=user_id, action=action, handle=handle,
                                    proof=proof or "", created_at=ts(now))
         if cid is None:
@@ -668,6 +671,36 @@ class Engine:
 
     def decline_claim(self, cid, reviewer_id, now):
         return self.store.claim_transition(cid, "pending", "declined", reviewer_id, ts(now))
+
+    def reverse_claim(self, cid, reviewer_id, now):
+        """A moderator declines a claim that was already paid. Allowed for decline_window_hours after the
+        claim; the points come back out through a negative row in the same category, stamped like the
+        original award so the right cycle and day lose them. After the window the claim is final.
+        error: not_found | not_approved | too_late."""
+        claim = self.store.get_claim(cid)
+        if not claim:
+            return ApprovalResult(False, "not_found")
+        if claim["status"] != "approved":
+            return ApprovalResult(False, "not_approved")
+        deadline = parse_ts(claim["created_at"]) + datetime.timedelta(hours=pc.ENGAGE["decline_window_hours"])
+        if to_utc(now) > deadline:
+            return ApprovalResult(False, "too_late")
+        if not self.store.claim_transition(cid, "approved", "declined", reviewer_id, ts(now)):
+            return ApprovalResult(False, "not_approved")
+        award = self.store.get_award(f"claim:{cid}")
+        removed = int(award["points"]) if award and award["points"] > 0 else 0
+        try:
+            if removed:
+                self._insert(guild_id=award["guild_id"], user_id=award["user_id"], lane=award["lane"],
+                             category=award["category"], points=-removed, reason="claim declined by a moderator",
+                             submission_id=None, award_key=f"claim_reverse:{cid}", awarded_by=reviewer_id,
+                             created_at=award["created_at"])
+        except Exception:
+            self.store.claim_transition(cid, "declined", "approved", None, None)   # nothing was taken back
+            raise
+        cat = pc.CATEGORIES[pc.ENGAGE["actions"][claim["action"]]]
+        return ApprovalResult(True, awards=[Award(pc.ENGAGE["actions"][claim["action"]], cat["lane"], -removed,
+                                                  cat["points"], ["claim declined"], claim["user_id"])])
 
     def _grant_claim(self, claim, reviewer_id):
         category = pc.ENGAGE["actions"][claim["action"]]

@@ -1014,15 +1014,69 @@ class TestEngagementClaims(Base):
         self.assertEqual(self.pts(7), 5)
         self.assertIsNotNone(self.s.get_award(f"claim:{cid}"))
 
-    def test_declined_claims_pay_nothing_and_can_be_tried_again(self):
+    def test_declined_claims_pay_nothing_and_cannot_be_claimed_again(self):
         _, cid = self.claim(7, "retweet")
         self.assertTrue(self.e.decline_claim(cid, REVIEWER, MON))
         self.assertFalse(self.e.decline_claim(cid, REVIEWER, MON))
         self.assertEqual(self.e.approve_claim(cid, REVIEWER, MON).error, "not_pending")
         self.assertEqual(self.pts(7), 0)
-        status, cid2 = self.claim(7, "retweet")
-        self.assertEqual(status, "pending")
-        self.assertNotEqual(cid, cid2)
+        self.assertEqual(self.claim(7, "retweet"), ("declined", None))
+        self.assertEqual(self.claim(7, "like")[0], "pending")                # other actions are unaffected
+        self.assertEqual(self.claim(8, "retweet")[0], "pending")              # and so are other members
+
+    def test_a_paid_claim_can_be_reversed_for_24_hours(self):
+        _, cid = self.claim(7, "comment")
+        self.assertTrue(self.e.approve_claim(cid, 0, MON).ok)
+        self.assertEqual(self.pts(7, "reach"), 5)
+        res = self.e.reverse_claim(cid, REVIEWER, MON + datetime.timedelta(hours=23, minutes=59))
+        self.assertEqual((res.ok, res.awards[0].points), (True, -5))
+        self.assertEqual(self.pts(7, "reach"), 0)
+        self.assertEqual(self.s.get_claim(cid)["status"], "declined")
+        self.assertEqual(self.s.get_award(f"claim_reverse:{cid}")["points"], -5)
+
+    def test_after_24_hours_a_paid_claim_is_final(self):
+        _, cid = self.claim(7, "comment")
+        self.e.approve_claim(cid, 0, MON)
+        res = self.e.reverse_claim(cid, REVIEWER, MON + datetime.timedelta(hours=24, seconds=1))
+        self.assertEqual((res.ok, res.error), (False, "too_late"))
+        self.assertEqual(self.pts(7, "reach"), 5)
+        self.assertEqual(self.s.get_claim(cid)["status"], "approved")
+
+    def test_reversing_twice_or_a_pending_or_unknown_claim_changes_nothing(self):
+        _, cid = self.claim(7, "comment")
+        self.assertEqual(self.e.reverse_claim(cid, REVIEWER, MON).error, "not_approved")   # still pending
+        self.e.approve_claim(cid, 0, MON)
+        self.assertTrue(self.e.reverse_claim(cid, REVIEWER, MON).ok)
+        self.assertEqual(self.e.reverse_claim(cid, REVIEWER, MON).error, "not_approved")
+        self.assertEqual(self.e.reverse_claim(999, REVIEWER, MON).error, "not_found")
+        self.assertEqual(self.pts(7), 0)
+
+    def test_a_claim_trimmed_by_the_daily_cap_reverses_only_what_was_paid(self):
+        self.s.insert_award(guild_id=1, user_id=7, lane="reach", category="official_engage", points=29, reason="",
+                            submission_id=None, award_key="seed", awarded_by=0, created_at=xe.ts(MON))
+        _, cid = self.claim(7, "comment")
+        self.assertEqual(self.e.approve_claim(cid, 0, MON).awards[0].points, 1)
+        self.assertEqual(self.e.reverse_claim(cid, REVIEWER, MON).awards[0].points, -1)
+        self.assertEqual(self.pts(7, "reach"), 29)
+
+    def test_a_reversal_takes_the_points_out_of_the_cycle_they_were_earned_in(self):
+        late_post, _ = self.e.open_official_post("https://x.com/G_NEXTGEN/status/6", dt(2026, 10, 18, 22, 30))
+        _, cid = self.claim(7, "comment", when=dt(2026, 10, 18, 23, 30), post=late_post)
+        self.e.approve_claim(cid, 0, dt(2026, 10, 18, 23, 30))
+        self.e.reverse_claim(cid, REVIEWER, dt(2026, 10, 19, 9))             # declined after the cycle closed
+        self.assertEqual(self.pts(7, "reach", *self.e.cycle_range(0)), 0)
+        self.assertEqual(self.pts(7, "reach", *self.e.cycle_range(1)), 0)
+
+    def test_a_failed_reversal_puts_the_claim_back_to_approved(self):
+        _, cid = self.claim(7, "comment")
+        self.e.approve_claim(cid, 0, MON)
+        original = self.e._insert
+        self.e._insert = lambda **k: (_ for _ in ()).throw(RuntimeError("boom"))
+        with self.assertRaises(RuntimeError):
+            self.e.reverse_claim(cid, REVIEWER, MON)
+        self.e._insert = original
+        self.assertEqual(self.s.get_claim(cid)["status"], "approved")
+        self.assertEqual(self.pts(7, "reach"), 5)
 
     def test_the_daily_official_engagement_cap_is_shared_with_claims(self):
         self.s.insert_award(guild_id=1, user_id=7, lane="reach", category="official_engage", points=29, reason="",

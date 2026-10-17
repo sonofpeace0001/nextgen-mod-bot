@@ -210,10 +210,12 @@ class Store:
         return self._one(f"SELECT * FROM {self.p}xp_ledger WHERE award_key=%s", (award_key,))
 
     def day_usage(self, user_id, categories, start, end):
-        """(points, count) of positive awards for these categories in [start, end)."""
+        """(points, count) for these categories in [start, end). Points are the net total, so a
+        declined claim (a negative row) gives its allowance back; the count is positive awards only."""
         r = self._one(
-            f"SELECT COALESCE(SUM(points),0) AS pts, COUNT(*) AS n FROM {self.p}xp_ledger "
-            f"WHERE user_id=%s AND points>0 AND category IN ({_marks(len(categories))}) "
+            f"SELECT COALESCE(SUM(points),0) AS pts, COALESCE(SUM(CASE WHEN points>0 THEN 1 ELSE 0 END),0) AS n "
+            f"FROM {self.p}xp_ledger "
+            f"WHERE user_id=%s AND category IN ({_marks(len(categories))}) "
             "AND created_at>=%s AND created_at<%s",
             (user_id, *categories, start, end))
         return int(r["pts"]), int(r["n"])
@@ -479,6 +481,15 @@ class Store:
         return self._one(
             f"SELECT * FROM {self.p}engage_claims WHERE post_id=%s AND user_id=%s AND action=%s "
             "AND status IN ('pending','approved') ORDER BY id DESC LIMIT 1", (post_id, user_id, action))
+
+    def declined_claim(self, post_id, user_id, action):
+        return self._one(
+            f"SELECT * FROM {self.p}engage_claims WHERE post_id=%s AND user_id=%s AND action=%s "
+            "AND status='declined' ORDER BY id DESC LIMIT 1", (post_id, user_id, action))
+
+    def delete_pending_claim(self, cid):
+        """Remove a claim that never got as far as being paid (only while it is still pending)."""
+        self._exec(f"DELETE FROM {self.p}engage_claims WHERE id=%s AND status='pending'", (cid,))
 
     def set_claim_message(self, cid, mid):
         self._exec(f"UPDATE {self.p}engage_claims SET review_message_id=%s WHERE id=%s", (mid, cid))

@@ -742,8 +742,9 @@ class XPCog(commands.Cog):
         e.add_field(name="Reach XP", value=points + ".", inline=False)
         e.add_field(
             name="How it works",
-            value="Do it on X first, then press the button for each thing you did. A moderator checks every claim "
-                  f"and the points are added once it is approved. Claims close {self.window_text()} after the post.",
+            value="Do it on X first, then press the button for each thing you did and the points are added at once. "
+                  f"A moderator can decline a claim within {self.decline_hours()} hours, which takes the points back. "
+                  f"Claims close {self.window_text()} after the post.",
             inline=False)
         e.set_footer(text=f"Posted by {poster_name}")
         return e
@@ -830,9 +831,10 @@ class XPCog(commands.Cog):
             return
         live = self.store.live_claim(post_id, uid, action)
         if live:
-            await interaction.response.send_message(
-                "You already claimed this. It is still being verified." if live["status"] == "pending"
-                else "You already claimed this and it was approved.", ephemeral=True)
+            await interaction.response.send_message("You already claimed this.", ephemeral=True)
+            return
+        if self.store.declined_claim(post_id, uid, action):
+            await interaction.response.send_message(self.declined_text(), ephemeral=True)
             return
         handle = self.store.get_handle(uid)
         if not handle:
@@ -841,12 +843,24 @@ class XPCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         await self.submit_claim(interaction, post_id, action, handle, "")
 
+    def declined_text(self):
+        return "A moderator declined this claim, so it cannot be claimed again."
+
+    @staticmethod
+    def decline_hours():
+        return pc.ENGAGE["decline_window_hours"]
+
     async def submit_claim(self, interaction, post_id, action, handle, proof):
-        """Record the claim, send it to the mod channel for verification, tell the member."""
+        """Record the claim and pay it straight away. The log channel gets a notice with a Decline
+        button; a moderator who declines within 24 hours takes the points back, and after that the
+        claim is final."""
         status, cid = self.engine.claim_engagement(
             interaction.guild.id, post_id, interaction.user.id, action, handle, proof, now_utc())
         if status == "exists":
             await interaction.followup.send("You already claimed this.", ephemeral=True)
+            return
+        if status == "declined":
+            await interaction.followup.send(self.declined_text(), ephemeral=True)
             return
         if status == "expired":   # the window closed while they were typing: nothing is recorded or sent to the mods
             await interaction.followup.send(self.expired_text(), ephemeral=True)
@@ -854,32 +868,51 @@ class XPCog(commands.Cog):
         if status != "pending":
             await interaction.followup.send("That could not be recorded.", ephemeral=True)
             return
-        if not await self._post_claim_card(interaction.user, cid, post_id, action, handle, proof):
-            # nobody would ever see it, so do not leave it pending; the member can try again
-            self.engine.decline_claim(cid, 0, now_utc())
-            await interaction.followup.send(
-                "I could not reach the moderators just now. Please try again in a few minutes.", ephemeral=True)
+        try:
+            res = self.engine.approve_claim(cid, 0, now_utc())
+        except Exception:
+            log.exception("Could not pay engagement claim %s", cid)
+            self.store.delete_pending_claim(cid)      # nothing was paid, so the member can simply try again
+            await interaction.followup.send("Something went wrong and nothing was added. Please try again.", ephemeral=True)
             return
-        await interaction.followup.send(
-            "Verification in progress. A moderator will check it and the points are added once it is approved.",
-            ephemeral=True)
+        if not res.ok:
+            await interaction.followup.send("That could not be recorded.", ephemeral=True)
+            return
+        award = res.awards[0]
+        await self._post_claim_card(interaction.user, cid, post_id, action, handle, proof, award)
+        db.log_action(interaction.guild.id, "CLAIM COUNTED", interaction.user.id, str(interaction.user),
+                      f"{action} +{award.points}")
+        self.request_board_refresh()
+        if award.points > 0:
+            text = (f"Claimed. +{award.points} {award.lane} XP added. A moderator can still decline it "
+                    f"within {self.decline_hours()} hours.")
+        else:
+            text = f"Claimed, but no points were added ({award.notes[0] if award.notes else 'none'})."
+        await interaction.followup.send(text, ephemeral=True)
 
-    async def _post_claim_card(self, user, cid, post_id, action, handle, proof):
+    async def _post_claim_card(self, user, cid, post_id, action, handle, proof, award):
+        """Tell the log channel a member just claimed, with a Decline button for the next 24 hours.
+        Returns False when it could not be posted (the points stay; only the notice is missing)."""
         ch = self.bot.get_channel(config.STAFF_REVIEW_CHANNEL_ID)
         if not ch:
-            log.error("Engagement claim %s has no mod channel to go to.", cid)
+            log.error("Engagement claim %s has no log channel to go to.", cid)
             return False
-        cat = pc.CATEGORIES[pc.ENGAGE["actions"][action]]
+        label = pc.ENGAGE["button_labels"][action]
         post = self.store.get_official_post(post_id)
-        e = discord.Embed(title=f"Engagement claim #{cid}", color=discord.Color.gold())
+        e = discord.Embed(title=f"Engagement claim #{cid}", color=discord.Color.gold(),
+                          description=f"<@{user.id}> just claimed **{label}** on an official post. "
+                                      "The points were added automatically.")
         e.add_field(name="Member", value=f"<@{user.id}> ({user.id})", inline=True)
         e.add_field(name="X account", value=f"[@{handle}](https://x.com/{handle})", inline=True)
-        e.add_field(name="Claims", value=f"{pc.ENGAGE['button_labels'][action]} (+{cat['points']} Reach XP)", inline=True)
+        shown = f"{label} (+{award.points} {award.lane} XP)"
+        if award.notes:
+            shown += f" ({'; '.join(award.notes)})"
+        e.add_field(name="Claims", value=shown[:1000], inline=True)
         e.add_field(name="Post", value=(post["url"] if post else "unknown")[:500], inline=False)
         if proof:
             e.add_field(name="Proof", value=proof[:500], inline=False)
+        e.set_footer(text=f"Press Decline within {self.decline_hours()} hours to take the XP back. After that it is final.")
         view = discord.ui.View(timeout=None)
-        view.add_item(ClaimButton(cid, "approve"))
         view.add_item(ClaimButton(cid, "decline"))
         try:
             msg = await ch.send(embed=e, view=view, allowed_mentions=discord.AllowedMentions.none())
@@ -908,6 +941,37 @@ class XPCog(commands.Cog):
             return
         await interaction.response.defer(ephemeral=True)
         label = pc.ENGAGE["button_labels"][claim["action"]].lower()
+        if verb == "approve" and claim["status"] == "approved":
+            await interaction.followup.send("That claim has already been reviewed and counted.", ephemeral=True)
+            return
+        if verb == "decline" and claim["status"] == "approved":
+            res = self.engine.reverse_claim(cid, member.id, now_utc())
+            if not res.ok:
+                if res.error == "too_late":
+                    await self._close_claim_card(interaction, discord.Color.light_grey(),
+                                                 f"Final: {self.decline_hours()} hours have passed", None)
+                    await interaction.followup.send(
+                        f"More than {self.decline_hours()} hours have passed, so this claim is final.", ephemeral=True)
+                else:
+                    await interaction.followup.send("That claim has already been reviewed.", ephemeral=True)
+                return
+            a = res.awards[0]
+            removed = -a.points
+            dm = (f"Your {label} on the official post was declined by a moderator, so the {removed} {a.lane} XP was removed."
+                  if removed else f"Your {label} on the official post was declined by a moderator.")
+            await self._close_claim_card(interaction, discord.Color.red(), f"Declined by {member}",
+                                         f"-{removed} {a.lane} XP removed")
+            db.log_action(claim["guild_id"], "CLAIM DECLINED", claim["user_id"], str(member),
+                          f"{claim['action']} -{removed}")
+            self.request_board_refresh()
+            target = interaction.guild.get_member(claim["user_id"]) if interaction.guild else None
+            if target:
+                try:
+                    await target.send(dm)
+                except Exception:
+                    pass  # DMs closed: the leaderboard still shows the change
+            await interaction.followup.send("Declined. The XP was removed.", ephemeral=True)
+            return
         if verb == "approve":
             try:
                 res = self.engine.approve_claim(cid, member.id, now_utc())
