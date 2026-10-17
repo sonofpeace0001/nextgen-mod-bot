@@ -1,4 +1,4 @@
-﻿"""Tests for official post cards (Like / Retweet / Comment claims), in-channel review buttons for
+"""Tests for official post cards (Like / Retweet / Comment claims), in-channel review buttons for
 roles above Elite, and the two live leaderboards, using fake Discord objects.
 
 Run from the repo root:  python -m unittest discover -s tests -t .
@@ -196,6 +196,7 @@ class ClaimBase(EngageCase):
         await super().asyncSetUp()
         self.post_id, _ = self.engine.open_official_post(LINK, NOW)
         clock(self, NOW + datetime.timedelta(minutes=10))     # well inside the two hour claim window
+        self.cog.request_board_refresh = MagicMock()
 
     async def link_handle(self, user, text="@someone", proof=""):
         modal = xp_cog.HandleModal(self.cog, self.post_id, "like")
@@ -217,23 +218,27 @@ class TestClaimingPoints(ClaimBase):
         self.assertIsInstance(i.response.send_modal.await_args.args[0], xp_cog.HandleModal)
         self.assertIsNone(self.store.live_claim(self.post_id, 7, "like"))
 
-    async def test_submitting_the_username_creates_a_claim_and_sends_it_to_the_mod_channel(self):
+    async def test_submitting_the_username_pays_at_once_and_tells_the_log_channel(self):
         i = await self.link_handle(self.plain, "@someone")
         self.assertEqual(self.store.get_handle(7), "someone")
         claim = self.store.live_claim(self.post_id, 7, "like")
-        self.assertEqual(claim["status"], "pending")
+        self.assertEqual(claim["status"], "approved")
         self.assertEqual(self.store.get_claim(claim["id"])["handle"], "someone")
-        self.assertIn("Verification in progress", i.followup.send.await_args.args[0])
+        self.assertEqual(self.pts_total(7), 2)                                  # paid straight away
+        text = i.followup.send.await_args.args[0]
+        self.assertIn("+2 reach XP added", text)
+        self.assertIn("within 24 hours", text)
         self.assertTrue(i.followup.send.await_args.kwargs["ephemeral"])
         card = self.staff.send.await_args.kwargs
         self.assertEqual(card["embed"].title, f"Engagement claim #{claim['id']}")
+        self.assertIn("just claimed **Like**", card["embed"].description)
         fields = {f.name: f.value for f in card["embed"].fields}
         self.assertIn("https://x.com/someone", fields["X account"])
-        self.assertEqual(fields["Claims"], "Like (+2 Reach XP)")
+        self.assertEqual(fields["Claims"], "Like (+2 reach XP)")
         self.assertEqual(fields["Post"], LINK)
-        self.assertEqual([c.item.custom_id for c in card["view"].children],
-                         [f"xpc:{claim['id']}:approve", f"xpc:{claim['id']}:decline"])
-        self.assertEqual(self.pts_total(7), 0)  # nothing is awarded yet
+        self.assertIn("Decline within 24 hours", card["embed"].footer.text)
+        self.assertEqual([c.item.custom_id for c in card["view"].children], [f"xpc:{claim['id']}:decline"])
+        self.cog.request_board_refresh.assert_called()                         # the leaderboard follows by itself
 
     async def test_a_bad_username_is_refused_and_nothing_is_created(self):
         i = await self.link_handle(self.plain, "not a handle!!")
@@ -253,15 +258,16 @@ class TestClaimingPoints(ClaimBase):
         await self.cog.on_engage(i, self.post_id, "retweet")
         i.response.send_modal.assert_not_awaited()
         i.response.defer.assert_awaited()
-        self.assertEqual(self.store.live_claim(self.post_id, 7, "retweet")["status"], "pending")
-        self.assertIn("Verification in progress", i.followup.send.await_args.args[0])
+        self.assertEqual(self.store.live_claim(self.post_id, 7, "retweet")["status"], "approved")
+        self.assertIn("+3 reach XP added", i.followup.send.await_args.args[0])
 
     async def test_claiming_the_same_thing_twice_is_refused_politely(self):
         await self.link_handle(self.plain)
         i = self.inter(self.plain)
         await self.cog.on_engage(i, self.post_id, "like")
-        self.assertIn("still being verified", i.response.send_message.await_args.args[0])
+        self.assertEqual(i.response.send_message.await_args.args[0], "You already claimed this.")
         self.assertEqual(self.staff.send.await_count, 1)
+        self.assertEqual(self.pts_total(7), 2)                                  # not paid twice
 
     async def test_unknown_posts_and_excluded_members_are_turned_away(self):
         i = self.inter(self.plain)
@@ -272,25 +278,43 @@ class TestClaimingPoints(ClaimBase):
         await self.cog.on_engage(i2, self.post_id, "like")
         self.assertIn("not part of points", i2.response.send_message.await_args.args[0])
 
-    async def test_a_declined_claim_can_be_claimed_again(self):
+    async def test_a_declined_claim_cannot_be_claimed_again(self):
         await self.link_handle(self.plain)
         cid = self.store.live_claim(self.post_id, 7, "like")["id"]
-        self.engine.decline_claim(cid, 50, NOW)
+        self.engine.reverse_claim(cid, 50, xp_cog.now_utc())
         i = self.inter(self.plain)
         await self.cog.on_engage(i, self.post_id, "like")
-        self.assertEqual(self.store.live_claim(self.post_id, 7, "like")["status"], "pending")
+        self.assertIn("declined this claim", i.response.send_message.await_args.args[0])
+        self.assertIsNone(self.store.live_claim(self.post_id, 7, "like"))
+        self.assertEqual(self.pts_total(7), 0)
+        j = await self.link_handle(self.plain)                                  # nor through the form
+        self.assertIn("declined this claim", j.followup.send.await_args.args[0])
+        self.assertEqual(self.pts_total(7), 0)
 
-
-    async def test_if_the_mod_channel_cannot_be_reached_the_claim_is_not_left_pending(self):
-        original = self.staff.send.side_effect
+    async def test_the_points_stay_even_if_the_log_channel_cannot_be_reached(self):
         self.staff.send.side_effect = Exception("Discord is down")
         i = await self.link_handle(self.plain)
-        self.assertIn("could not reach the moderators", i.followup.send.await_args.args[0])
-        self.assertIsNone(self.store.live_claim(self.post_id, 7, "like"))      # not stuck behind a card nobody can see
-        self.staff.send.side_effect = original
+        self.assertIn("+2 reach XP added", i.followup.send.await_args.args[0])
+        self.assertEqual(self.pts_total(7), 2)
+
+    async def test_if_paying_fails_nothing_is_left_behind_and_the_member_can_retry(self):
+        original = self.engine._grant_claim
+        self.engine._grant_claim = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+        i = await self.link_handle(self.plain)
+        self.assertIn("nothing was added", i.followup.send.await_args.args[0])
+        self.assertIsNone(self.store.live_claim(self.post_id, 7, "like"))
+        self.staff.send.assert_not_awaited()
+        self.engine._grant_claim = original
         retry = self.inter(self.plain)
         await self.cog.on_engage(retry, self.post_id, "like")
-        self.assertEqual(self.store.live_claim(self.post_id, 7, "like")["status"], "pending")
+        self.assertEqual(self.store.live_claim(self.post_id, 7, "like")["status"], "approved")
+
+    async def test_the_daily_cap_still_applies_and_is_said_in_the_message(self):
+        self.store.insert_award(guild_id=GUILD, user_id=7, lane="reach", category="official_engage", points=30, reason="",
+                                submission_id=None, award_key="seed", awarded_by=0, created_at=xe.ts(NOW))
+        i = await self.link_handle(self.plain)
+        self.assertIn("no points were added", i.followup.send.await_args.args[0])
+        self.assertIn("daily cap", i.followup.send.await_args.args[0])
 
 
 class TestClaimWindow(ClaimBase):
@@ -306,22 +330,20 @@ class TestClaimWindow(ClaimBase):
         i.message = card
         await self.cog.on_engage(i, self.post_id, "like")
         text = i.response.send_message.await_args.args[0]
-        self.assertEqual(text, "This task has expired. You can only claim within 2 hours of the post.")
+        self.assertEqual(text, "Claiming has expired. Claims close 2 hours after the post is made. "
+                               "You can still do the task on X, but no points can be claimed now.")
         self.assertTrue(i.response.send_message.await_args.kwargs["ephemeral"])
         i.response.send_modal.assert_not_awaited()
         self.assertIsNone(self.store.live_claim(self.post_id, 7, "like"))
         self.staff.send.assert_not_awaited()                        # nothing goes to the log channel
 
-    async def test_the_card_is_closed_when_someone_clicks_after_the_window(self):
+    async def test_the_card_and_its_buttons_are_left_alone_after_the_window(self):
         self.late()
         i = self.inter(self.plain)
         card = SimpleNamespace(embeds=[discord.Embed(title="New post from NEXTGEN")], edit=AsyncMock())
         i.message = card
         await self.cog.on_engage(i, self.post_id, "like")
-        kw = card.edit.await_args.kwargs
-        self.assertEqual([c.label for c in kw["view"].children], ["Claims closed"])
-        self.assertTrue(kw["view"].children[0].disabled)
-        self.assertEqual(kw["embed"].fields[0].name, "Task expired")
+        card.edit.assert_not_awaited()                              # members can still read it and do the task on X
 
     async def test_a_click_just_inside_the_window_still_works(self):
         self.late(119)
@@ -335,39 +357,17 @@ class TestClaimWindow(ClaimBase):
         modal.handle._value = "someone"
         self.late()                                                 # they took too long typing
         await modal.on_submit(i)
-        self.assertIn("This task has expired", i.followup.send.await_args.args[0])
+        self.assertIn("Claiming has expired", i.followup.send.await_args.args[0])
         self.assertIsNone(self.store.live_claim(self.post_id, 7, "like"))
         self.staff.send.assert_not_awaited()
 
-    async def test_a_claim_made_in_time_can_still_be_verified_after_the_window(self):
+    async def test_a_claim_made_in_time_can_still_be_declined_after_the_window(self):
         await self.link_handle(self.plain)                          # claimed 10 minutes in
         claim = self.store.live_claim(self.post_id, 7, "like")
-        self.late(600)
-        res = self.engine.approve_claim(claim["id"], 50, xp_cog.now_utc())
+        self.late(600)                                              # long after the 2 hours, still inside 24
+        res = self.engine.reverse_claim(claim["id"], 50, xp_cog.now_utc())
         self.assertTrue(res.ok)
-
-    async def test_the_expiry_sweep_closes_old_cards_once(self):
-        ch = self.reach_ch
-        pid, msg = await self.cog.send_engagement_card(ch, LINK, "", "mod")
-        self.assertEqual(self.store.get_official_post(pid)["card_message_id"], msg.id)
-        self.late(135)                                              # the card went up 10 minutes in
-        await self.cog._expire_cards()
-        msg.edit.assert_awaited_once()
-        self.assertEqual(self.store.get_official_post(pid)["card_closed"], 1)
-        await self.cog._expire_cards()
-        msg.edit.assert_awaited_once()                              # not edited again
-
-    async def test_cards_still_inside_the_window_are_left_alone(self):
-        _pid, msg = await self.cog.send_engagement_card(self.reach_ch, LINK, "", "mod")
-        await self.cog._expire_cards()
-        msg.edit.assert_not_awaited()
-
-    async def test_a_deleted_card_is_just_marked_closed(self):
-        pid, msg = await self.cog.send_engagement_card(self.reach_ch, LINK, "", "mod")
-        del self.reach_ch.messages[msg.id]
-        self.late(135)
-        await self.cog._expire_cards()
-        self.assertEqual(self.store.get_official_post(pid)["card_closed"], 1)
+        self.assertEqual(self.pts_total(7), 0)
 
     async def test_the_card_tells_members_about_the_window(self):
         e = self.cog.engagement_embed("", "mod")
@@ -376,11 +376,13 @@ class TestClaimWindow(ClaimBase):
 
 
 class TestClaimVerification(ClaimBase):
+    """Claims still waiting for a moderator (made before claims were paid automatically)."""
+
     async def asyncSetUp(self):
         await super().asyncSetUp()
-        self.cog.request_board_refresh = MagicMock()
-        await self.link_handle(self.plain, "@someone")
-        self.cid = self.store.live_claim(self.post_id, 7, "like")["id"]
+        self.store.set_handle(7, "someone")
+        self.cid = self.store.add_claim(guild_id=GUILD, post_id=self.post_id, user_id=7, action="like",
+                                        handle="someone", proof="", created_at=xe.ts(NOW))
 
     def review_inter(self, user):
         i = self.inter(user)
@@ -451,6 +453,95 @@ class TestClaimVerification(ClaimBase):
         await self.cog.on_claim_review(self.review_inter(self.mod), self.cid, "approve")
         self.assertIn("no points were added", self.people[7].send.await_args.args[0])
         self.assertIn("daily cap", self.people[7].send.await_args.args[0])
+
+
+class TestDecliningAPaidClaim(ClaimBase):
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        await self.link_handle(self.plain, "@someone")                  # claimed 10 minutes into the window
+        self.cid = self.store.live_claim(self.post_id, 7, "like")["id"]
+
+    def review_inter(self, user):
+        i = self.inter(user)
+        i.message = SimpleNamespace(embeds=[discord.Embed(title="Engagement claim")], edit=AsyncMock())
+        return i
+
+    async def test_declining_takes_the_xp_back_and_tells_the_member(self):
+        self.assertEqual(self.pts_total(7), 2)
+        i = self.review_inter(self.mod)
+        await self.cog.on_claim_review(i, self.cid, "decline")
+        self.assertEqual(self.pts_total(7), 0)
+        self.assertEqual(self.store.get_claim(self.cid)["status"], "declined")
+        edit = i.message.edit.await_args.kwargs
+        self.assertIsNone(edit["view"])
+        self.assertEqual(edit["embed"].color, discord.Color.red())
+        self.assertIn("Declined by", edit["embed"].footer.text)
+        self.assertIn("-2 reach XP removed", edit["embed"].fields[-1].value)
+        self.assertIn("declined by a moderator, so the 2 reach XP was removed", self.people[7].send.await_args.args[0])
+        self.assertIn("The XP was removed", i.followup.send.await_args.args[0])
+        self.cog.request_board_refresh.assert_called()
+
+    async def test_nothing_is_deleted_the_ledger_shows_a_negative_row(self):
+        await self.cog.on_claim_review(self.review_inter(self.mod), self.cid, "decline")
+        rows = [(r["category"], r["points"]) for r in self.store.ledger_for_user(7)]
+        self.assertEqual(sorted(rows), [("official_like", -2), ("official_like", 2)])
+
+    async def test_declining_twice_removes_it_once(self):
+        await self.cog.on_claim_review(self.review_inter(self.mod), self.cid, "decline")
+        again = self.review_inter(self.mod)
+        await self.cog.on_claim_review(again, self.cid, "decline")
+        self.assertIn("already been reviewed", again.followup.send.await_args.args[0])
+        self.assertEqual(self.pts_total(7), 0)
+
+    async def test_after_24_hours_the_claim_is_final(self):
+        clock(self, NOW + datetime.timedelta(minutes=10, hours=24, seconds=1))
+        i = self.review_inter(self.mod)
+        await self.cog.on_claim_review(i, self.cid, "decline")
+        self.assertIn("claim is final", i.followup.send.await_args.args[0])
+        self.assertEqual(self.pts_total(7), 2)                                  # everything is good
+        self.assertEqual(self.store.get_claim(self.cid)["status"], "approved")
+        self.assertIn("Final", i.message.edit.await_args.kwargs["embed"].footer.text)
+
+    async def test_just_inside_24_hours_it_can_still_be_declined(self):
+        clock(self, NOW + datetime.timedelta(minutes=10, hours=24))
+        await self.cog.on_claim_review(self.review_inter(self.mod), self.cid, "decline")
+        self.assertEqual(self.pts_total(7), 0)
+
+    async def test_only_roles_above_elite_can_decline(self):
+        for user in (self.elite, self.plain):
+            i = self.review_inter(user)
+            await self.cog.on_claim_review(i, self.cid, "decline")
+            self.assertIn("above Elite", i.response.send_message.await_args.args[0])
+        self.assertEqual(self.pts_total(7), 2)
+
+    async def test_nobody_declines_their_own_claim_or_one_from_someone_they_invited(self):
+        i = self.review_inter(self.plain)
+        self.plain.roles = [SimpleNamespace(id=MOD, position=9)]                # make the claimant a reviewer too
+        await self.cog.on_claim_review(i, self.cid, "decline")
+        self.assertIn("your own claim", i.response.send_message.await_args.args[0])
+        self.plain.roles = []
+        self.engine.register_referral(GUILD, 7, self.mod.id, NOW, NOW - datetime.timedelta(days=400), NOW)
+        i2 = self.review_inter(self.mod)
+        await self.cog.on_claim_review(i2, self.cid, "decline")
+        self.assertIn("someone you invited", i2.response.send_message.await_args.args[0])
+        self.assertEqual(self.pts_total(7), 2)
+
+    async def test_approve_on_a_paid_claim_says_it_is_already_counted(self):
+        i = self.review_inter(self.mod)
+        await self.cog.on_claim_review(i, self.cid, "approve")
+        self.assertIn("already been reviewed and counted", i.followup.send.await_args.args[0])
+        self.assertEqual(self.pts_total(7), 2)
+
+    async def test_a_closed_dm_does_not_break_the_decline(self):
+        self.people[7].send = AsyncMock(side_effect=Exception("DMs closed"))
+        await self.cog.on_claim_review(self.review_inter(self.mod), self.cid, "decline")
+        self.assertEqual(self.pts_total(7), 0)
+
+    async def test_declining_gives_the_daily_allowance_back(self):
+        await self.cog.on_claim_review(self.review_inter(self.mod), self.cid, "decline")
+        used, _ = self.store.day_usage(7, pc.DAILY_CAPS["official_engage"]["categories"],
+                                       *xe.day_bounds(NOW))
+        self.assertEqual(used, 0)
 
 
 class TestButtonsSurviveRestarts(EngageCase):

@@ -84,8 +84,7 @@ class Store:
                 message_id BIGINT DEFAULT 0
             )""",
             f"""CREATE TABLE IF NOT EXISTS {p}official_posts (
-                id {pk}, url TEXT, opened_at TEXT, closes_at TEXT,
-                card_channel_id BIGINT DEFAULT 0, card_message_id BIGINT DEFAULT 0, card_closed INTEGER DEFAULT 0
+                id {pk}, url TEXT, opened_at TEXT, closes_at TEXT
             )""",
             f"CREATE TABLE IF NOT EXISTS {p}strikes (user_id BIGINT PRIMARY KEY, count INTEGER DEFAULT 0, last_reason TEXT DEFAULT '')",
             f"CREATE TABLE IF NOT EXISTS {p}excluded_users (user_id BIGINT PRIMARY KEY, reason TEXT DEFAULT '')",
@@ -104,10 +103,6 @@ class Store:
             f"CREATE UNIQUE INDEX IF NOT EXISTS idx_engage_claims_live ON {p}engage_claims (post_id, user_id, action) "
             "WHERE status IN ('pending','approved')",
         ]
-        if self.dialect == "pg":   # tables created before the claim window existed
-            for col in ("card_channel_id BIGINT DEFAULT 0", "card_message_id BIGINT DEFAULT 0",
-                        "card_closed INTEGER DEFAULT 0"):
-                stmts.append(f"ALTER TABLE {p}official_posts ADD COLUMN IF NOT EXISTS {col}")
         for s in stmts:
             self._exec(s)
 
@@ -210,10 +205,12 @@ class Store:
         return self._one(f"SELECT * FROM {self.p}xp_ledger WHERE award_key=%s", (award_key,))
 
     def day_usage(self, user_id, categories, start, end):
-        """(points, count) of positive awards for these categories in [start, end)."""
+        """(points, count) for these categories in [start, end). Points are the net total, so a
+        declined claim (a negative row) gives its allowance back; the count is positive awards only."""
         r = self._one(
-            f"SELECT COALESCE(SUM(points),0) AS pts, COUNT(*) AS n FROM {self.p}xp_ledger "
-            f"WHERE user_id=%s AND points>0 AND category IN ({_marks(len(categories))}) "
+            f"SELECT COALESCE(SUM(points),0) AS pts, COALESCE(SUM(CASE WHEN points>0 THEN 1 ELSE 0 END),0) AS n "
+            f"FROM {self.p}xp_ledger "
+            f"WHERE user_id=%s AND category IN ({_marks(len(categories))}) "
             "AND created_at>=%s AND created_at<%s",
             (user_id, *categories, start, end))
         return int(r["pts"]), int(r["n"])
@@ -439,19 +436,6 @@ class Store:
     def get_official_post(self, pid):
         return self._one(f"SELECT * FROM {self.p}official_posts WHERE id=%s", (pid,))
 
-    def set_official_card(self, pid, channel_id, message_id):
-        self._exec(f"UPDATE {self.p}official_posts SET card_channel_id=%s, card_message_id=%s WHERE id=%s",
-                   (channel_id, message_id, pid))
-
-    def cards_to_close(self, now_ts):
-        """Posted cards whose claim window has ended and that still show their buttons."""
-        return self._all(
-            f"SELECT * FROM {self.p}official_posts WHERE card_message_id>0 AND card_closed=0 AND closes_at<%s",
-            (now_ts,))
-
-    def mark_card_closed(self, pid):
-        self._exec(f"UPDATE {self.p}official_posts SET card_closed=1 WHERE id=%s", (pid,))
-
     # ---- X handles and engagement claims ---------------------------------
     def get_handle(self, user_id):
         r = self._one(f"SELECT handle FROM {self.p}x_handles WHERE user_id=%s", (user_id,))
@@ -479,6 +463,15 @@ class Store:
         return self._one(
             f"SELECT * FROM {self.p}engage_claims WHERE post_id=%s AND user_id=%s AND action=%s "
             "AND status IN ('pending','approved') ORDER BY id DESC LIMIT 1", (post_id, user_id, action))
+
+    def declined_claim(self, post_id, user_id, action):
+        return self._one(
+            f"SELECT * FROM {self.p}engage_claims WHERE post_id=%s AND user_id=%s AND action=%s "
+            "AND status='declined' ORDER BY id DESC LIMIT 1", (post_id, user_id, action))
+
+    def delete_pending_claim(self, cid):
+        """Remove a claim that never got as far as being paid (only while it is still pending)."""
+        self._exec(f"DELETE FROM {self.p}engage_claims WHERE id=%s AND status='pending'", (cid,))
 
     def set_claim_message(self, cid, mid):
         self._exec(f"UPDATE {self.p}engage_claims SET review_message_id=%s WHERE id=%s", (mid, cid))
