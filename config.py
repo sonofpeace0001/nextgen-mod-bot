@@ -154,6 +154,9 @@ PROOF_KEY_BY_ID = {v: k for k, v in PROOF_CHANNELS.items()}
 ELITE_ROLE_ID     = _int("ELITE_ROLE_ID", 0)
 STAFF_ROLE_IDS    = _id_set("STAFF_ROLE_IDS")
 REVIEWER_ROLE_IDS = _id_set("REVIEWER_ROLE_IDS")
+# Holders of the Admin role can review everything, including members they invited (the founder is
+# the same). They still cannot review their own submissions or claims.
+ADMIN_REVIEW_ROLE_IDS = _id_set("ADMIN_REVIEW_ROLE_IDS") or {1465341764125589524}
 
 # Time. Points code runs on UTC only; POINTS_TZ exists so a non-UTC value can be flagged at
 # startup, it is never used to compute a day, week or cycle.
