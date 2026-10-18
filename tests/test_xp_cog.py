@@ -289,6 +289,35 @@ class TestReview(CogCase):
         self.assertTrue(await view.interaction_check(interaction(member(61, admin=True), self.guild)))
 
 
+    async def test_the_founder_can_review_people_they_invited_but_not_themselves(self):
+        await self.submit(402, 7, "build", "https://example.com/x")
+        view = self.reviewer_view(1)
+        self.engine.register_referral(GUILD, 7, 1, NOW, NOW - datetime.timedelta(days=400), NOW)   # the founder (id 1) invited 7
+        founder = interaction(member(1, admin=True), self.guild)
+        self.assertTrue(await view.interaction_check(founder))
+        founder.response.send_message.assert_not_awaited()
+        await self.submit(403, 1, "build", "https://example.com/y")                                # the founder's own post
+        own = interaction(member(1, admin=True), self.guild)
+        self.assertFalse(await self.reviewer_view(2).interaction_check(own))
+        self.assertIn("own submission", own.response.send_message.await_args.args[0])
+
+
+    async def test_holders_of_the_admin_role_can_review_everyone_but_themselves(self):
+        await self.submit(404, 7, "build", "https://example.com/z")
+        view = self.reviewer_view(1)
+        self.engine.register_referral(GUILD, 7, 70, NOW, NOW - datetime.timedelta(days=400), NOW)
+        with mock.patch.object(config, "ADMIN_REVIEW_ROLE_IDS", {4242}):
+            admin = interaction(member(70, roles=[4242]), self.guild)          # no role above Elite, but the Admin role
+            self.assertTrue(await view.interaction_check(admin))               # and they invited this member
+            admin.response.send_message.assert_not_awaited()
+            own = interaction(member(7, roles=[4242]), self.guild)
+            self.assertFalse(await view.interaction_check(own))
+            self.assertIn("own submission", own.response.send_message.await_args.args[0])
+
+    def test_the_admin_role_is_set_by_default(self):
+        self.assertIn(1465341764125589524, config.ADMIN_REVIEW_ROLE_IDS)
+
+
 class TestLifecycle(CogCase):
     async def test_pending_cards_are_reregistered_after_a_restart(self):
         await self.submit(500, 7, "build", "https://example.com/v")

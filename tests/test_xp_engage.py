@@ -526,6 +526,15 @@ class TestDecliningAPaidClaim(ClaimBase):
         self.assertIn("someone you invited", i2.response.send_message.await_args.args[0])
         self.assertEqual(self.pts_total(7), 2)
 
+    async def test_the_founder_can_decline_a_claim_from_someone_they_invited(self):
+        founder = member(1, admin=True, guild=self.guild)                       # FOUNDER_ID is 1 in these tests
+        self.engine.register_referral(GUILD, 7, founder.id, NOW, NOW - datetime.timedelta(days=400), NOW)
+        i = self.review_inter(founder)
+        await self.cog.on_claim_review(i, self.cid, "decline")
+        i.response.send_message.assert_not_awaited()
+        self.assertEqual(self.pts_total(7), 0)
+        self.assertEqual(self.store.get_claim(self.cid)["status"], "declined")
+
     async def test_approve_on_a_paid_claim_says_it_is_already_counted(self):
         i = self.review_inter(self.mod)
         await self.cog.on_claim_review(i, self.cid, "approve")

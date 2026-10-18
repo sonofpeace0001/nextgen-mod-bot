@@ -77,7 +77,20 @@ def is_staff(member, guild=None) -> bool:
 def is_reviewer(member, guild=None) -> bool:
     if is_above_elite(member, guild):
         return True
-    return any(r.id in config.REVIEWER_ROLE_IDS for r in getattr(member, "roles", []))
+    return any(r.id in config.REVIEWER_ROLE_IDS or r.id in config.ADMIN_REVIEW_ROLE_IDS
+               for r in getattr(member, "roles", []))
+
+
+def invited_by_reviewer(store, reviewer, user_id) -> bool:
+    """True when this reviewer invited the member being reviewed, which is not allowed. The founder
+    (who invites most of the community) and holders of the Admin role are the exception; they still
+    cannot review their own submissions or claims."""
+    if reviewer.id == config.FOUNDER_ID:
+        return False
+    if any(r.id in config.ADMIN_REVIEW_ROLE_IDS for r in getattr(reviewer, "roles", [])):
+        return False
+    ref = store.get_referral(user_id)
+    return bool(ref and ref["inviter_id"] == reviewer.id)
 
 
 def staff_only():
@@ -194,8 +207,7 @@ class ReviewView(discord.ui.View):
             if sub["user_id"] == member.id:
                 await interaction.response.send_message("You cannot review your own submission.", ephemeral=True)
                 return False
-            ref = self.cog.store.get_referral(sub["user_id"])
-            if ref and ref["inviter_id"] == member.id:
+            if invited_by_reviewer(self.cog.store, member, sub["user_id"]):
                 await interaction.response.send_message(
                     "You cannot review a submission from someone you invited.", ephemeral=True)
                 return False
@@ -903,8 +915,7 @@ class XPCog(commands.Cog):
         if claim["user_id"] == member.id:
             await interaction.response.send_message("You cannot verify your own claim.", ephemeral=True)
             return
-        ref = self.store.get_referral(claim["user_id"])
-        if ref and ref["inviter_id"] == member.id:
+        if invited_by_reviewer(self.store, member, claim["user_id"]):
             await interaction.response.send_message("You cannot verify a claim from someone you invited.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
